@@ -229,7 +229,8 @@ private struct WorkHero: View {
             HStack {
                 Text("\(Fmt.duration(plan.lengthMinutes)) shift · \(data.settings.commuteMinutes) min drive")
                     .font(.szBodySmall).foregroundStyle(p.onSurfaceVariant)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
                 if let remindAt = data.reminderTime(date), remindAt > now {
                     let on = data.reminderEnabled(date)
                     Button { toggleReminder(date, !on) } label: {

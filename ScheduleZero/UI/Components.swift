@@ -284,7 +284,7 @@ struct ExpiryBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     if settings.autoRefreshEnabled {
-                        Button("Run refresh shortcut") { SigningMonitor.runRefreshShortcut(force: true) }
+                        Button("Run shortcut") { SigningMonitor.runRefreshShortcut(force: true) }
                             .buttonStyle(.szFilled)
                         Button("Open SideStore") { SigningMonitor.openSideStore() }.buttonStyle(.szOutlined)
                     } else {

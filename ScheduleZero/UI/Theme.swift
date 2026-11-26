@@ -149,6 +149,7 @@ struct SZButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 14, weight: .medium))
             .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false) // never cut a label off
             .padding(.horizontal, kind == .text ? 12 : 20)
             .frame(minHeight: 40)
             .foregroundStyle(fg)
