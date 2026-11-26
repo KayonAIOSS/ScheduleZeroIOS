@@ -11,7 +11,8 @@ You need:
 
 ## 1. Get the app file
 
-1. On the iPhone, open the ScheduleZero download link from Kayo in **Safari**. It's a file called `ScheduleZero.ipa`.
+1. On the iPhone, open this link in **Safari**: https://github.com/KayonAIOSS/ScheduleZeroIOS/releases/latest/download/ScheduleZero.ipa
+   It downloads a file called `ScheduleZero.ipa` (always the newest version).
 2. Tap the download, then **Share** → **SideStore** (or open SideStore, go to **My Apps**, tap **+**, and pick the file).
 3. Wait for SideStore to finish installing. ScheduleZero appears on the home screen.
 
