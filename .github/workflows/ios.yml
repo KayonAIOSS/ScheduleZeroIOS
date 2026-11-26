@@ -28,7 +28,7 @@ jobs:
       - name: Tools
         run: |
           xcodebuild -version
-          brew install xcodegen
+          brew install xcodegen xcbeautify
           xcodegen generate
 
       - name: Pick a simulator
@@ -51,7 +51,7 @@ jobs:
           set -o pipefail
           xcodebuild test -project ScheduleZero.xcodeproj -scheme ScheduleZero \
             -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath build/sim \
-            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/test.log" | grep -E "error:|warning: unre|Test Case|Executed|\*\* TEST" || true
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/test.log" | xcbeautify --renderer github-actions || true
           grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/test.log"
 
       - name: Screenshots
@@ -63,7 +63,7 @@ jobs:
           xcodebuild build -project ScheduleZero.xcodeproj -scheme ScheduleZero \
             -configuration Release -sdk iphoneos -destination "generic/platform=iOS" \
             -derivedDataPath build/device \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -n 30
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1             | tee "$RUNNER_TEMP/build.log" | xcbeautify --renderer github-actions
           rm -rf Payload && mkdir Payload
           cp -R build/device/Build/Products/Release-iphoneos/ScheduleZero.app Payload/
           zip -qry "$RUNNER_TEMP/ScheduleZero.ipa" Payload
@@ -87,6 +87,28 @@ jobs:
           path: |
             ${{ runner.temp }}/test.log
             ${{ runner.temp }}/server.log
+
+      # Artifacts need a GitHub sign-in to download, even on a public repo. This branch doesn't, so
+      # screenshots and error logs can be checked from anywhere (raw.githubusercontent.com).
+      - name: Publish screenshots and logs to the ci-output branch
+        if: always() && github.event_name == 'push'
+        run: |
+          OUT="$RUNNER_TEMP/ci-output"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          cp -R "$RUNNER_TEMP/screenshots" "$OUT/" 2>/dev/null || true
+          for f in test build; do
+            [ -f "$RUNNER_TEMP/$f.log" ] || continue
+            grep -E "error:|warning:.*(deprecated|never used|unreachable)|Test Case .* failed|XCTAssert|\*\* (TEST|BUILD)" "$RUNNER_TEMP/$f.log" | head -300 > "$OUT/$f-errors.log" || true
+            tail -n 300 "$RUNNER_TEMP/$f.log" > "$OUT/$f-tail.log"
+          done
+          cp "$RUNNER_TEMP/server.log" "$OUT/" 2>/dev/null || true
+          echo "$GITHUB_SHA ${{ job.status }}" > "$OUT/commit.txt"
+          cd "$OUT"
+          git init -q -b ci-output
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -q --allow-empty -m "CI output for $GITHUB_SHA"
+          git add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -q --amend -m "CI output for $GITHUB_SHA ${{ job.status }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-output
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
