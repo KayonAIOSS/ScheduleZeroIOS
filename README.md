@@ -1,5 +1,6 @@
 # ScheduleZero for iPhone (SwiftUI)
-n*Schedule zero vibe coded work application IOS port.*
+
+*Schedule zero vibe coded work application IOS port.*
 
 Native port of the Android app: same look, sync protocol (`server/PROTOCOL.md`), servers,
 failover, dots and comparison, password flow and local reminders. iOS 17+, iPhone only.
