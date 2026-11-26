@@ -35,17 +35,19 @@ enum DemoMode {
         // Today is always a work day in the demo so the countdown shows.
         d.plans[Day(now)] = .work(WorkShift(start: 16 * 60, end: 24 * 60 + 30))
         d.reminderOverrides[week.plus(3)] = true
-        d.others[.samy] = [
-            week.plus(0): .work(WorkShift(start: 15 * 60, end: 23 * 60)),
-            week.plus(2): .work(WorkShift(start: 17 * 60, end: 24 * 60)),
-            Day(now): .work(WorkShift(start: 17 * 60, end: 25 * 60)),
-            week.plus(4): .off,
-        ]
-        d.others[.austin] = [
-            week.plus(0): .work(WorkShift(start: 16 * 60, end: 24 * 60)),
-            Day(now): .work(WorkShift(start: 14 * 60, end: 22 * 60)),
-            week.plus(3): .work(WorkShift(start: 18 * 60, end: 26 * 60)),
-        ]
+        // Assigned one by one: "today" can be the same day as one of the weekdays, and a
+        // dictionary literal with a duplicate key crashes.
+        var samy: [Day: DayPlan] = [:]
+        samy[week.plus(0)] = .work(WorkShift(start: 15 * 60, end: 23 * 60))
+        samy[week.plus(2)] = .work(WorkShift(start: 17 * 60, end: 24 * 60))
+        samy[week.plus(4)] = .off
+        samy[Day(now)] = .work(WorkShift(start: 17 * 60, end: 25 * 60))
+        var austin: [Day: DayPlan] = [:]
+        austin[week.plus(0)] = .work(WorkShift(start: 16 * 60, end: 24 * 60))
+        austin[week.plus(3)] = .work(WorkShift(start: 18 * 60, end: 26 * 60))
+        austin[Day(now)] = .work(WorkShift(start: 14 * 60, end: 22 * 60))
+        d.others[.samy] = samy
+        d.others[.austin] = austin
         return d
     }
 }
