@@ -1,0 +1,50 @@
+# XcodeGen spec. The Xcode project is generated from this on the GitHub macOS runner
+# (`xcodegen generate`), so nobody has to edit .xcodeproj files by hand on Windows.
+name: ScheduleZero
+options:
+  bundleIdPrefix: com.schedulezero
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+targets:
+  ScheduleZero:
+    type: application
+    platform: iOS
+    sources:
+      - path: ScheduleZero
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.schedulezero.app
+        PRODUCT_NAME: ScheduleZero
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+        INFOPLIST_FILE: ScheduleZero/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+  ScheduleZeroTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ScheduleZeroTests
+    dependencies:
+      - target: ScheduleZero
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.schedulezero.app.tests
+schemes:
+  ScheduleZero:
+    build:
+      targets:
+        ScheduleZero: all
+        ScheduleZeroTests: [test]
+    test:
+      targets:
+        - ScheduleZeroTests
