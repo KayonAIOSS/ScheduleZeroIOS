@@ -4,7 +4,7 @@
 # paste this whole file, put the shared key in SZ_PEER_KEY, then Save.
 #
 # The app is served at https://pciememorycontroller.com/ScheduleZero/ (point the reverse proxy's
-# /ScheduleZero path at this machine's port 8787; stripping the prefix or not both work). The same
+# /ScheduleZero path at this machine's port 10119; stripping the prefix or not both work). The same
 # address is the Android app's backup server.
 #
 # Update: Apps -> schedulezero -> Edit -> Save. "pull_policy: always" fetches the newest image.
@@ -23,7 +23,7 @@ services:
       # To reset the same person again later, change the text, e.g. "kayo 2".
       SZ_RESET_PASSWORDS: ""
     ports:
-      - "8787:8787"
+      - "10119:8787"
     volumes:
       # Schedules, passwords, carpools and notification settings. Kept across updates.
       - schedulezero-data:/data

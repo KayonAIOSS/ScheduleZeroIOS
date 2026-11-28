@@ -36,11 +36,11 @@ No shell is needed.
 1. **Apps → Discover Apps → ⋮ (top right) → Install via YAML.** Name: `schedulezero`.
 2. Paste [truenas/schedulezero.yaml](truenas/schedulezero.yaml). Put the shared key in `SZ_PEER_KEY`,
    and use the same key on debian-server. Then **Save**. TrueNAS downloads the image and starts it.
-   If port 8787 is taken, change the left number in `"8787:8787"`, e.g. `"8790:8787"`.
-3. Check it on the NAS itself: `http://<NAS-IP>:8787/ScheduleZero/api/ping` should show `"web": true`.
+   The app uses port 10119 on the NAS. If that is taken, change the left number in `"10119:8787"`.
+3. Check it on the NAS itself: `http://<NAS-IP>:10119/ScheduleZero/api/ping` should show `"web": true`.
 4. Make **https://pciememorycontroller.com/ScheduleZero** reach it: in whatever already serves
    pciememorycontroller.com (Nginx Proxy Manager, the playit.gg tunnel, Cloudflare…), send the path
-   `/ScheduleZero` to `http://<NAS-IP>:8787`. Keeping or stripping the `/ScheduleZero` prefix both work.
+   `/ScheduleZero` to `http://<NAS-IP>:10119`. Keeping or stripping the `/ScheduleZero` prefix both work.
 5. Open https://pciememorycontroller.com/ScheduleZero/ and sign in.
 
 **Updating:** Apps → schedulezero → **Edit → Save**. It pulls the newest image. Data stays in the
