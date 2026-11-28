@@ -116,9 +116,9 @@ def run_flow(page, n):
     page.wait_for_timeout(1500)  # first sync round
     shot(page, f"{n}-03-home")
     if n == "iphone":
-        page.mouse.wheel(0, 700)
+        page.evaluate("window.scrollBy(0, 700)")
         shot(page, f"{n}-04-home-scrolled")
-        page.mouse.wheel(0, -2000)
+        page.evaluate("window.scrollBy(0, -2000)")
     page.click(".hero [data-act=compare]") if page.locator(".hero [data-act=compare]").count() else None
     shot(page, f"{n}-05-compare")
     page.keyboard.press("Escape")
@@ -144,9 +144,9 @@ def run_flow(page, n):
     page.wait_for_timeout(300)
     shot(page, f"{n}-11-settings")
     if n == "iphone":
-        page.mouse.wheel(0, 900)
+        page.evaluate("window.scrollBy(0, 900)")
         shot(page, f"{n}-12-settings-scrolled")
-        page.mouse.wheel(0, -3000)
+        page.evaluate("window.scrollBy(0, -3000)")
     page.click("[data-act=s-dark]")
     page.wait_for_timeout(300)
     shot(page, f"{n}-13-settings-light")
