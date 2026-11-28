@@ -55,7 +55,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 PEOPLE = {
     "samuel": {"name": "Samuel", "color": "#E53935"},
