@@ -23,6 +23,8 @@ const LONG_POLL_SECONDS: i32 = 25;
 const SYNC_KEY: &str = "sz.sync.v1";
 /// The main server is this site itself.
 pub const MAIN: &str = "";
+/// Default backup: debian-server on the tailnet (the Android app's main server).
+pub const DEFAULT_SECONDARY: &str = "http://100.93.228.123:8787";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Connection {
@@ -87,6 +89,8 @@ pub struct SavedSync {
     pub revs: BTreeMap<String, i64>,
     /// Backup server address, e.g. "https://example.com/ScheduleZero". Empty = none.
     pub secondary: String,
+    /// The backup was set by hand (otherwise it follows `DEFAULT_SECONDARY`).
+    pub secondary_chosen: bool,
     /// Server clock minus this device's clock, in ms (see `edit_time`).
     pub clock_offset: i64,
     /// Version 1 kept a single token for this site.
@@ -101,6 +105,9 @@ impl SavedSync {
         }
         if s.device_id.is_empty() {
             s.device_id = browser::random_id();
+        }
+        if !s.secondary_chosen {
+            s.secondary = DEFAULT_SECONDARY.to_string();
         }
         s.save();
         CLOCK_OFFSET.with(|c| c.set(s.clock_offset));
@@ -136,6 +143,8 @@ pub fn clean_server(input: &str) -> String {
     }
     if c.starts_with("http://") || c.starts_with("https://") {
         c.to_string()
+    } else if c.split(':').next().is_some_and(|h| h.parse::<std::net::Ipv4Addr>().is_ok()) {
+        format!("http://{c}") // a bare IP like the Tailscale one is plain http, like on Android
     } else {
         format!("https://{c}")
     }
@@ -369,6 +378,7 @@ pub fn set_secondary(input: &str) {
     let s = clean_server(input);
     with_mut(|a| {
         a.saved.secondary = s;
+        a.saved.secondary_chosen = true;
         a.saved.save();
         a.ui.backup_text = a.saved.secondary.clone();
         if a.repo.data.me.is_some() {

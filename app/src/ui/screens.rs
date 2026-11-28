@@ -464,7 +464,7 @@ pub fn settings(a: &App, now: LocalTime) -> String {
         let changed = typed != a.saved.secondary;
         let https_page = main_url.starts_with("https://");
         let warn = if https_page && typed.starts_with("http://") {
-            r#"<div class="t-small error">Browsers block http:// servers from an https page. Use an https:// address (or leave it empty).</div>"#
+            r#"<div class="t-small dim">Note: browsers block http:// servers from an https page, so this backup only works when the app is opened over http (e.g. on the tailnet). An https:// address works everywhere.</div>"#
         } else {
             ""
         };
@@ -482,7 +482,11 @@ pub fn settings(a: &App, now: LocalTime) -> String {
                 btn("tonal", if sign_in { "Sign in" } else { "Sync now" }, "sync-now", ""),
                 esc(&main_url),
                 esc(&a.ui.backup_text),
-                if a.saved.secondary.is_empty() { String::new() } else { btn("text", "Remove", "backup-clear", "") },
+                format!(
+                    "{}{}",
+                    if a.saved.secondary == crate::sync::DEFAULT_SECONDARY { String::new() } else { btn("text", "Use default", "backup-default", "") },
+                    if a.saved.secondary.is_empty() { String::new() } else { btn("text", "Remove", "backup-clear", "") }
+                ),
                 btn_disabled("text", "Save", "backup-save", "", !changed),
                 action_row("Switch person", "Sign this device in as someone else.", "Switch", "switch-person")
             ),

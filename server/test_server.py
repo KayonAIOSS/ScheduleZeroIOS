@@ -346,6 +346,36 @@ class ServerTests(unittest.TestCase):
 
 
 class PeerMergeTests(unittest.TestCase):
+    def test_servers_keep_the_most_recent_edit_whichever_side_has_it(self):
+        a_dir, b_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+        try:
+            a, b = sz.Store(a_dir), sz.Store(b_dir)
+            d1 = (date.today() + timedelta(days=1)).isoformat()
+            d2 = (date.today() + timedelta(days=2)).isoformat()
+            # Day 1: A has the newer edit. Day 2: B has the newer edit, and it's a deletion.
+            a.merge_days("kayo", {d1: {"type": "work", "start": 960, "end": 1440, "updated": 2000},
+                                  d2: {"type": "off", "updated": 1000}})
+            b.merge_days("kayo", {d1: {"type": "off", "updated": 1000},
+                                  d2: {"type": "none", "updated": 3000}})
+
+            def sync(x, y):  # what peer_sync_loop does: pull, merge, push
+                x.merge_all(y.snapshot()["people"])
+                y.merge_all(x.snapshot()["people"])
+
+            sync(a, b)
+            for s in (a, b):
+                self.assertEqual(s.people["kayo"][d1]["start"], 960)
+                self.assertEqual(s.people["kayo"][d2]["type"], "none")
+            # An older copy arriving later never overwrites; a newer one always does.
+            b.merge_all({"kayo": {d1: {"type": "off", "updated": 1500}}})
+            self.assertEqual(b.people["kayo"][d1]["type"], "work")
+            b.merge_all({"kayo": {d1: {"type": "off", "updated": 2500}}})
+            sync(b, a)
+            self.assertEqual(a.people["kayo"][d1]["type"], "off")
+        finally:
+            shutil.rmtree(a_dir)
+            shutil.rmtree(b_dir)
+
     def test_carpools_and_messages_merge_between_servers(self):
         a_dir, b_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
         try:

@@ -371,6 +371,7 @@ pub fn click(act: &str, arg: &str) {
             sync::set_secondary(&text);
         }
         "backup-clear" => sync::set_secondary(""),
+        "backup-default" => sync::set_secondary(sync::DEFAULT_SECONDARY),
         _ => {}
     }
 }
