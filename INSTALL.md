@@ -5,7 +5,7 @@
 1. Open **Safari** and go to **https://pciememorycontroller.com/ScheduleZero/**
 2. Tap the **Share** button (the square with an arrow), scroll down, tap **Add to Home Screen**, then **Add**.
 3. Open **ScheduleZero** from your Home Screen.
-4. **Tap your dot** (Samy red, Austin blue, Kayo purple) and enter your password. If you've never
+4. **Tap your dot** (Samuel red, Autism blue, Kawaii purple) and enter your password. If you've never
    set one up on this server, the app asks you to create one (at least 4 characters).
 5. For shift reminders: **Settings → Reminders → Allow**, then tap **Allow** when iPhone asks.
 
@@ -47,5 +47,5 @@ No shell is needed.
 `schedulezero-data` volume.
 
 **Reset someone's password** (this server only): Apps → schedulezero → Edit, set
-`SZ_RESET_PASSWORDS` to `kayo` (or `samy` / `austin`), and Save. It happens once. To reset the same
-person again later, change the text, e.g. `kayo 2`. Schedules are kept.
+`SZ_RESET_PASSWORDS` to `kawaii` (or `samuel` / `autism`), and Save. It happens once. To reset the same
+person again later, change the text, e.g. `kawaii 2`. Schedules are kept.

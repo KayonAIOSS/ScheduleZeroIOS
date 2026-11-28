@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn items_match_android_alarms() {
-        let mut d = AppData { me: Some(Person::Kayo), ..Default::default() };
+        let mut d = AppData { me: Some(Person::Kawaii), ..Default::default() };
         let fri = Day::from_ymd(2026, 11, 27);
         d.plans.insert(fri.0, DayPlan::Work { start: 960, end: 1440 });
         d.plans.insert(fri.plus(1).0, DayPlan::Work { start: 1020, end: 1500 });
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn weekly_prompt_skips_entered_weeks() {
-        let mut d = AppData { me: Some(Person::Kayo), ..Default::default() };
+        let mut d = AppData { me: Some(Person::Kawaii), ..Default::default() };
         d.settings.weekly_prompt = true;
         let fri = Day::from_ymd(2026, 11, 27);
         let sunday = Day::from_ymd(2026, 11, 29);

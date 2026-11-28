@@ -7,7 +7,8 @@ server it was loaded from.
 
 Default servers: main `http://100.93.228.123:8787` (the `debian-server` Tailscale node), backup
 `https://pciememorycontroller.com`. Clients try the main server first and fall back to the backup.
-Each server has its own passwords/tokens; servers sync schedules with each other (see below).
+Servers sync everything with each other (see below), including passwords and login tokens, so one
+sign-in works on both. For every kind of data the most recent change wins.
 
 ## People
 
@@ -15,9 +16,9 @@ Exactly three accounts. IDs are lowercase and fixed:
 
 | id       | name   | dot color |
 |----------|--------|-----------|
-| `samy`   | Samy   | red `#E53935` |
-| `austin` | Austin | blue `#1E88E5` |
-| `kayo`   | Kayo   | purple `#9C4DFF` |
+| `samuel`   | Samuel   | red `#E53935` |
+| `autism` | Autism | blue `#1E88E5` |
+| `kawaii`   | Kawaii   | purple `#9C4DFF` |
 
 One person can use any number of devices. Each install generates a random device ID and sends it in
 `X-Device-Id` (plus optional `X-Device-Name`, `X-Platform`: `android` / `web`).
@@ -49,14 +50,14 @@ Reminders, theme and other settings are per-device and never synced.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET  | `/api/ping` | – | Health check, people list. |
-| GET  | `/api/auth/status?person=kayo` | – | `{"person":"kayo","hasPassword":true}` |
+| GET  | `/api/auth/status?person=kawaii` | – | `{"person":"kawaii","hasPassword":true}` |
 | POST | `/api/auth/setup` | – | First-time password. Body `{"person","password","deviceId","deviceName","platform"}` → `{"token"}`. `409` if a password already exists. Min length 4. |
 | POST | `/api/auth/login` | – | Same body → `{"token"}`. `401` wrong password, `404` no password set (go to setup). |
 | GET  | `/api/state?since=REV&wait=25` | Bearer | Long-poll. Returns immediately with the full state if the server's `rev` > `since`, otherwise waits up to `wait` seconds (max 25) and returns `{"rev":N,"unchanged":true}`. Use `since=-1&wait=0` for a one-shot fetch. |
 | POST | `/api/schedule` | Bearer | Upload your own days: `{"days":{"2026-11-25":{...entry...}}}` → `{"applied":n,"rev":N}`. You can only write the person your token belongs to. |
 | GET  | `/api/devices` | Bearer | Your own devices and when they were last seen. |
 
-Auth header: `Authorization: Bearer <token>`. Tokens look like `kayo.<random>`.
+Auth header: `Authorization: Bearer <token>`. Tokens look like `kawaii.<random>`.
 
 Full state:
 
@@ -64,11 +65,11 @@ Full state:
 {
   "rev": 42,
   "serverTime": 1795725900000,
-  "you": "kayo",
+  "you": "kawaii",
   "people": {
-    "samy":   {"2026-11-25": {"type": "work", "start": 960, "end": 1440, "updated": 1795725900000}},
-    "austin": {},
-    "kayo":   {"2026-11-25": {"type": "off", "updated": 1795725900000}}
+    "samuel":   {"2026-11-25": {"type": "work", "start": 960, "end": 1440, "updated": 1795725900000}},
+    "autism": {},
+    "kawaii":   {"2026-11-25": {"type": "off", "updated": 1795725900000}}
   }
 }
 ```
@@ -84,12 +85,12 @@ carpools in `/api/state` (`"carpools": [...]`); each device also gets its person
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/carpool` | Bearer | `{"action":"create","kind":"request"\|"offer","day","dir":"to"\|"from","to":["samy",...],"note"}` |
+| POST | `/api/carpool` | Bearer | `{"action":"create","kind":"request"\|"offer","day","dir":"to"\|"from","to":["samuel",...],"note"}` |
 | POST | `/api/carpool` | Bearer | `{"action":"respond","id","answer":"yes"\|"no"}`, only by a person it was sent to; can be changed later |
 | POST | `/api/carpool` | Bearer | `{"action":"cancel","id"}`, only by the sender |
 | POST | `/api/inbox/read` | Bearer | `{"ids":[...]}` or `{"all":true}` |
 
-Carpool: `{"id","from","kind","day","dir","to":[...],"note","created","cancelled":ms|0,"responses":{"samy":{"answer":"yes","at":ms}}}`.
+Carpool: `{"id","from","kind","day","dir","to":[...],"note","created","cancelled":ms|0,"responses":{"samuel":{"answer":"yes","at":ms}}}`.
 Each create, answer and cancel makes inbox messages for the other people involved:
 `{"id","to","from","kind":"carpool-new|carpool-answer|carpool-cancel","carpool","title","body","created","read":ms|0}`.
 Devices notify about new unread messages. Android does it on sync; the web app gets a web push from
@@ -134,7 +135,10 @@ Both endpoints need the header `X-Peer-Key: <SZ_PEER_KEY>` (identical on all ser
 | POST | `/api/peer/merge` | `{"people":{...}}`. Merged last-write-wins per day. |
 
 A server with `SZ_PEERS` set does GET + merge + POST every `SZ_PEER_INTERVAL` seconds. Only one side
-needs to be configured. Passwords are never exchanged.
+needs to be configured. Peer state also carries `passwords` (hash, salt, `changed`, token hashes):
+the most recently changed password wins; for the same password, login tokens are combined. A reset
+is a record with no hash, so it spreads too (an old password can't come back from the other server).
+Never delete a password file by hand: use `--reset-password NAME` or `SZ_RESET_PASSWORDS`.
 
 ## Client loop (what Android and the web app do)
 

@@ -8,35 +8,35 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Person {
-    Samy,
-    Austin,
-    Kayo,
+    Samuel,
+    Autism,
+    Kawaii,
 }
 
 impl Person {
-    pub const ALL: [Person; 3] = [Person::Samy, Person::Austin, Person::Kayo];
+    pub const ALL: [Person; 3] = [Person::Samuel, Person::Autism, Person::Kawaii];
 
     pub fn id(self) -> &'static str {
         match self {
-            Person::Samy => "samy",
-            Person::Austin => "austin",
-            Person::Kayo => "kayo",
+            Person::Samuel => "samuel",
+            Person::Autism => "autism",
+            Person::Kawaii => "kawaii",
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Person::Samy => "Samy",
-            Person::Austin => "Austin",
-            Person::Kayo => "Kayo",
+            Person::Samuel => "Samuel",
+            Person::Autism => "Autism",
+            Person::Kawaii => "Kawaii",
         }
     }
 
     pub fn color(self) -> &'static str {
         match self {
-            Person::Samy => "#E53935",
-            Person::Austin => "#1E88E5",
-            Person::Kayo => "#9C4DFF",
+            Person::Samuel => "#E53935",
+            Person::Autism => "#1E88E5",
+            Person::Kawaii => "#9C4DFF",
         }
     }
 
@@ -363,7 +363,7 @@ impl AppData {
         self.carpools_for(d, dir).iter().any(|c| c.cancelled == 0)
     }
 
-    /// "Samy drives you", "You drive Austin", for accepted carpools on this day/direction.
+    /// "Samuel drives you", "You drive Autism", for accepted carpools on this day/direction.
     pub fn ride_summary(&self, d: Day, dir: Dir) -> Option<String> {
         let me = self.me?;
         let mut parts = Vec::new();
@@ -411,14 +411,14 @@ mod tests {
     use super::*;
 
     fn data() -> AppData {
-        let mut d = AppData { me: Some(Person::Kayo), ..Default::default() };
+        let mut d = AppData { me: Some(Person::Kawaii), ..Default::default() };
         let mon = Day::from_ymd(2026, 11, 23);
         d.plans.insert(mon.0, DayPlan::Work { start: 960, end: 1440 });
         d.plans.insert(mon.plus(1).0, DayPlan::Off);
         d.plans.insert(mon.plus(2).0, DayPlan::Work { start: 1020, end: 1530 });
         d.plans.insert(mon.plus(3).0, DayPlan::Work { start: 960, end: 1440 });
-        d.others[Person::Samy.index()].insert(mon.0, DayPlan::Work { start: 900, end: 1380 });
-        d.others[Person::Austin.index()].insert(mon.0, DayPlan::Off);
+        d.others[Person::Samuel.index()].insert(mon.0, DayPlan::Work { start: 900, end: 1380 });
+        d.others[Person::Autism.index()].insert(mon.0, DayPlan::Off);
         d
     }
 
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(d.week_shift_count(mon), 3);
         assert!(d.has_any_entry(mon));
         assert!(!d.has_any_entry(mon.plus(7)));
-        assert_eq!(d.others_working(mon), vec![Person::Samy]);
+        assert_eq!(d.others_working(mon), vec![Person::Samuel]);
         assert_eq!(d.recent_shifts(4), vec![(960, 1440), (1020, 1530)]);
     }
 
@@ -461,14 +461,14 @@ mod tests {
     fn carpool_matches_use_start_for_to_and_end_for_from() {
         let mut d = data();
         let mon = Day::from_ymd(2026, 11, 23);
-        // Kayo 960–1440, Samy 900–1380: no exact match either way.
+        // Kawaii 960–1440, Samuel 900–1380: no exact match either way.
         assert!(d.carpool_matches(mon, Dir::To).is_empty());
-        d.others[Person::Samy.index()].insert(mon.0, DayPlan::Work { start: 960, end: 1200 });
-        assert_eq!(d.carpool_matches(mon, Dir::To), vec![Person::Samy]);
+        d.others[Person::Samuel.index()].insert(mon.0, DayPlan::Work { start: 960, end: 1200 });
+        assert_eq!(d.carpool_matches(mon, Dir::To), vec![Person::Samuel]);
         assert!(d.carpool_matches(mon, Dir::From).is_empty(), "to and from are independent");
         d.settings.carpool_window = 30;
-        d.others[Person::Austin.index()].insert(mon.0, DayPlan::Work { start: 700, end: 1420 });
-        assert_eq!(d.carpool_matches(mon, Dir::From), vec![Person::Austin]);
+        d.others[Person::Autism.index()].insert(mon.0, DayPlan::Work { start: 700, end: 1420 });
+        assert_eq!(d.carpool_matches(mon, Dir::From), vec![Person::Autism]);
         assert!(d.carpool_matches(mon.plus(1), Dir::To).is_empty(), "I'm off Tuesday");
     }
 
@@ -476,19 +476,19 @@ mod tests {
     fn rides_and_summary() {
         let mut d = data();
         let mon = Day::from_ymd(2026, 11, 23);
-        let mut c = Carpool { id: "c1".into(), from: "kayo".into(), kind: "request".into(), day: mon.iso(), dir: "to".into(),
-            to: vec!["samy".into(), "austin".into()], ..Default::default() };
+        let mut c = Carpool { id: "c1".into(), from: "kawaii".into(), kind: "request".into(), day: mon.iso(), dir: "to".into(),
+            to: vec!["samuel".into(), "autism".into()], ..Default::default() };
         d.carpools.push(c.clone());
         assert!(d.has_active_carpool(mon, Dir::To));
         assert!(!d.has_active_carpool(mon, Dir::From));
         assert_eq!(d.ride_summary(mon, Dir::To), None);
-        c.responses.insert("samy".into(), Answer { answer: "yes".into(), at: 1 });
-        c.responses.insert("austin".into(), Answer { answer: "no".into(), at: 1 });
+        c.responses.insert("samuel".into(), Answer { answer: "yes".into(), at: 1 });
+        c.responses.insert("autism".into(), Answer { answer: "no".into(), at: 1 });
         d.carpools = vec![c.clone()];
-        assert_eq!(d.ride_summary(mon, Dir::To).as_deref(), Some("Samy drives you"));
+        assert_eq!(d.ride_summary(mon, Dir::To).as_deref(), Some("Samuel drives you"));
         c.kind = "offer".into();
         d.carpools = vec![c.clone()];
-        assert_eq!(d.ride_summary(mon, Dir::To).as_deref(), Some("You drive Samy"));
+        assert_eq!(d.ride_summary(mon, Dir::To).as_deref(), Some("You drive Samuel"));
         c.cancelled = 5;
         d.carpools = vec![c];
         assert_eq!(d.ride_summary(mon, Dir::To), None);

@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn edits_are_dirty_until_uploaded() {
         let mut r = Repo::default();
-        r.set_me(Person::Kayo, 1);
+        r.set_me(Person::Kawaii, 1);
         let d = Day::from_ymd(2026, 11, 27);
         r.set_plan(d, work(960, 1440), 100);
         let sent = r.pending_uploads(100);
@@ -284,31 +284,31 @@ mod tests {
     #[test]
     fn server_merge_respects_unsent_edits_and_timestamps() {
         let mut r = Repo::default();
-        r.set_me(Person::Kayo, 1);
+        r.set_me(Person::Kawaii, 1);
         let d = Day::from_ymd(2026, 11, 27);
         r.set_plan(d, work(960, 1440), 100);
         let mut people = BTreeMap::new();
         let mut mine = BTreeMap::new();
         mine.insert(d.0, SyncedDay { plan: Some(DayPlan::Off), updated: 999 });
         mine.insert(d.plus(1).0, SyncedDay { plan: work(720, 900), updated: 50 });
-        people.insert(Person::Kayo, mine.clone());
-        let mut samy = BTreeMap::new();
-        samy.insert(d.0, SyncedDay { plan: work(900, 1300), updated: 5 });
-        samy.insert(d.plus(1).0, SyncedDay { plan: None, updated: 6 });
-        people.insert(Person::Samy, samy);
+        people.insert(Person::Kawaii, mine.clone());
+        let mut samuel = BTreeMap::new();
+        samuel.insert(d.0, SyncedDay { plan: work(900, 1300), updated: 5 });
+        samuel.insert(d.plus(1).0, SyncedDay { plan: None, updated: 6 });
+        people.insert(Person::Samuel, samuel);
         r.apply_server(&people);
         // The server's copy of `d` (999) is newer than our unsent edit (100): the later edit wins.
         assert_eq!(r.data.plan(d), Some(DayPlan::Off));
         assert_eq!(r.data.plan(d.plus(1)), work(720, 900));
-        assert_eq!(r.data.others_working(d), vec![Person::Samy]);
-        assert_eq!(r.data.others[Person::Samy.index()].len(), 1);
+        assert_eq!(r.data.others_working(d), vec![Person::Samuel]);
+        assert_eq!(r.data.others[Person::Samuel.index()].len(), 1);
 
         let sent = r.pending_uploads(0);
         r.mark_uploaded(&sent);
         r.apply_server(&people); // now the newer server copy (999 > 100) wins
         assert_eq!(r.data.plan(d), Some(DayPlan::Off));
         mine.insert(d.0, SyncedDay { plan: None, updated: 10 }); // older: ignored
-        people.insert(Person::Kayo, mine);
+        people.insert(Person::Kawaii, mine);
         r.apply_server(&people);
         assert_eq!(r.data.plan(d), Some(DayPlan::Off));
     }
@@ -320,11 +320,11 @@ mod tests {
         let min = 60_000;
         let d = Day::from_ymd(2026, 11, 30);
         let mut phone = Repo::default();
-        phone.set_me(Person::Kayo, 0);
+        phone.set_me(Person::Kawaii, 0);
         phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min); // offline edit, 10:00
         let other = SyncedDay { plan: work(1000, 1400), updated: 10 * 60 * min + 5 * min }; // 10:05
         let mut people = BTreeMap::new();
-        people.insert(Person::Kayo, BTreeMap::from([(d.0, other)]));
+        people.insert(Person::Kawaii, BTreeMap::from([(d.0, other)]));
         // Reconnect: the server already has 10:05, so it rejects our 10:00 upload...
         let sent = phone.pending_uploads(0);
         phone.mark_uploaded(&sent);
@@ -336,7 +336,7 @@ mod tests {
         // Same, but the state arrives before the upload: the newer edit still wins, and our
         // older edit is no longer queued, so it is never sent.
         let mut phone = Repo::default();
-        phone.set_me(Person::Kayo, 0);
+        phone.set_me(Person::Kawaii, 0);
         phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min);
         phone.apply_server(&people);
         assert_eq!(phone.data.plan(d), work(1000, 1400));
@@ -344,7 +344,7 @@ mod tests {
 
         // And the other way round: our offline edit is the later one, so it stays queued and wins.
         let mut phone = Repo::default();
-        phone.set_me(Person::Kayo, 0);
+        phone.set_me(Person::Kawaii, 0);
         phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min + 9 * min);
         phone.apply_server(&people);
         assert_eq!(phone.data.plan(d), Some(DayPlan::Off));
@@ -355,7 +355,7 @@ mod tests {
     fn read_marks_survive_until_the_server_has_them() {
         use crate::model::InboxMessage;
         let mut r = Repo::default();
-        r.set_me(Person::Kayo, 0);
+        r.set_me(Person::Kawaii, 0);
         let msg = |id: &str, read: i64| InboxMessage { id: id.into(), created: 5, read, ..Default::default() };
         r.apply_server_extras(None, Some(vec![msg("a", 0), msg("b", 0)]));
         assert_eq!(r.data.unread_count(), 2);
@@ -378,16 +378,16 @@ mod tests {
         let d = Day::from_ymd(2026, 11, 27);
         r.set_plan(d, work(960, 1440), 5);
         r.mark_uploaded(&r.pending_uploads(0));
-        r.set_me(Person::Samy, 7);
+        r.set_me(Person::Samuel, 7);
         assert_eq!(r.pending_uploads(0).get(&d.0).unwrap().updated, 7);
-        r.set_me(Person::Austin, 8);
+        r.set_me(Person::Autism, 8);
         assert!(r.data.plans.is_empty() && !r.has_pending_uploads());
     }
 
     #[test]
     fn week_tools() {
         let mut r = Repo::default();
-        r.set_me(Person::Kayo, 1);
+        r.set_me(Person::Kawaii, 1);
         let mon = Day::from_ymd(2026, 11, 23);
         r.set_plan(mon, work(960, 1440), 2);
         r.copy_week(mon, mon.plus(7), 3);

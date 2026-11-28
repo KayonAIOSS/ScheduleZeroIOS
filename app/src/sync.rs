@@ -23,8 +23,9 @@ const LONG_POLL_SECONDS: i32 = 25;
 const SYNC_KEY: &str = "sz.sync.v1";
 /// The main server is this site itself.
 pub const MAIN: &str = "";
-/// Default backup: debian-server on the tailnet (the Android app's main server).
-pub const DEFAULT_SECONDARY: &str = "http://100.93.228.123:8787";
+/// Default backup: debian-server on the tailnet (the Android app's main server), over https so
+/// browsers allow it from the https site.
+pub const DEFAULT_SECONDARY: &str = "https://debian-server.taile1c14.ts.net";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Connection {
@@ -416,9 +417,10 @@ pub async fn submit_password(password: String, setup: bool) -> PasswordResult {
                     if with(|a| a.saved.token(&other).is_some()) {
                         continue;
                     }
-                    if let Ok(has) = auth_status(&other, me).await {
-                        let p = if has { "/api/auth/login" } else { "/api/auth/setup" };
-                        if let Ok(v) = api_at(&other, "POST", p, None, Some(payload.clone()), 15_000).await {
+                    // Log in only. Passwords sync between servers, so a password created here
+                    // would count as a newer one and sign everyone out.
+                    if let Ok(true) = auth_status(&other, me).await {
+                        if let Ok(v) = api_at(&other, "POST", "/api/auth/login", None, Some(payload.clone()), 15_000).await {
                             if let Some(t) = v["token"].as_str() {
                                 with_mut(|a| {
                                     a.saved.tokens.insert(other.clone(), t.to_string());

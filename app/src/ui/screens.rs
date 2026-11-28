@@ -77,7 +77,7 @@ pub fn home(a: &App, now: LocalTime) -> String {
     }
     let title = format!(
         r#"<div class="row center gap10">{}<span class="t-title-l">{}</span></div><div class="row center t-small dim">{} ·&nbsp;{}</div>"#,
-        dot(data.me.unwrap_or(crate::model::Person::Kayo), 14),
+        dot(data.me.unwrap_or(crate::model::Person::Kawaii), 14),
         greeting(now),
         fmt::full_date(today),
         sync_status(&a.status)

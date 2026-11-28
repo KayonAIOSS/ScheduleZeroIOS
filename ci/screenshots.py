@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end check + screenshots, run by CI.
 
-Starts the real server with the built web app, seeds Samy's and Austin's weeks through the API,
-then drives the app like a person would: pick Kayo's dot, sign in, look around, edit a day.
+Starts the real server with the built web app, seeds Samuel's and Autism's weeks through the API,
+then drives the app like a person would: pick Kawaii's dot, sign in, look around, edit a day.
 iPhone layout in WebKit (Safari's engine) and desktop layout in Chromium, dark and light.
 Fails if the page throws an error. Usage: screenshots.py <dist-dir> <out-dir>
 """
@@ -40,9 +40,9 @@ def seed(today: date):
     w = lambda s, e: {"type": "work", "start": s, "end": e, "updated": 1}
     off = {"type": "off", "updated": 1}
     weeks = {
-        "samy": {0: w(900, 1380), 2: w(1020, 1440), 4: off, "today": w(960, 1500)},
-        "austin": {0: w(960, 1440), 3: w(1080, 1560), "today": w(840, 1320)},
-        "kayo": {0: w(960, 1440), 1: off, 2: w(1020, 1530), 3: w(960, 1440), 4: w(1080, 1560), 5: off, "today": w(960, 1470)},
+        "samuel": {0: w(900, 1380), 2: w(1020, 1440), 4: off, "today": w(960, 1500)},
+        "autism": {0: w(960, 1440), 3: w(1080, 1560), "today": w(840, 1320)},
+        "kawaii": {0: w(960, 1440), 1: off, 2: w(1020, 1530), 3: w(960, 1440), 4: w(1080, 1560), 5: off, "today": w(960, 1470)},
     }
     for person, days in weeks.items():
         token = api("POST", "/api/auth/setup", {"person": person, "password": "ci-pass", "deviceId": "ci-seed"})["token"]
@@ -104,7 +104,7 @@ def run_flow(page, n):
     page.goto(BASE + "/ScheduleZero/")
     page.wait_for_selector("[data-act=pick]", timeout=20000)
     shot(page, f"{n}-01-picker")
-    page.click("[data-act=pick][data-arg=kayo]")
+    page.click("[data-act=pick][data-arg=kawaii]")
     page.wait_for_selector("#pw", timeout=15000)
     shot(page, f"{n}-02-password")
     page.fill("#pw", "wrong-pass")
@@ -119,7 +119,7 @@ def run_flow(page, n):
         page.evaluate("window.scrollBy(0, 700)")
         shot(page, f"{n}-04-home-scrolled")
         page.evaluate("window.scrollBy(0, -2000)")
-    # Carpool: Samy starts at the same time today, so the hero's car button is highlighted.
+    # Carpool: Samuel starts at the same time today, so the hero's car button is highlighted.
     page.click(".hero [data-act=carpool]")
     page.wait_for_selector(".cp-dir.match", timeout=5000)
     shot(page, f"{n}-04b-carpool-sheet")
@@ -128,12 +128,12 @@ def run_flow(page, n):
     shot(page, f"{n}-04c-carpool-compose")
     page.click("[data-act=cp-send]")
     page.wait_for_selector(".cp-card", timeout=10000)
-    samy = api("POST", "/api/auth/login", {"person": "samy", "password": "ci-pass", "deviceId": "ci-samy"})["token"]
-    st = api("GET", "/api/state?since=-1&wait=0", token=samy)
-    mine = [m for m in st["inbox"] if m["title"] == "Kayo asks for a ride to work" and ("ci " + n) in m["body"]]
+    samuel = api("POST", "/api/auth/login", {"person": "samuel", "password": "ci-pass", "deviceId": "ci-samuel"})["token"]
+    st = api("GET", "/api/state?since=-1&wait=0", token=samuel)
+    mine = [m for m in st["inbox"] if m["title"] == "Kawaii asks for a ride to work" and ("ci " + n) in m["body"]]
     if not mine:
-        raise SystemExit(f"{n}: Samy never got the carpool request: {st['inbox']}")
-    api("POST", "/ScheduleZero/api/carpool", {"action": "respond", "id": mine[0]["carpool"], "answer": "yes"}, samy)
+        raise SystemExit(f"{n}: Samuel never got the carpool request: {st['inbox']}")
+    api("POST", "/ScheduleZero/api/carpool", {"action": "respond", "id": mine[0]["carpool"], "answer": "yes"}, samuel)
     page.wait_for_selector(".status.yes", timeout=40000)  # live update, no reload
     shot(page, f"{n}-04d-carpool-confirmed")
     page.keyboard.press("Escape")
@@ -142,8 +142,8 @@ def run_flow(page, n):
     shot(page, f"{n}-04e-inbox")
     page.click(".msg.unread [data-act=inbox-read]")
     page.wait_for_timeout(800)
-    st = api("GET", "/api/state?since=-1&wait=0", token=api("POST", "/api/auth/login", {"person": "kayo", "password": "ci-pass", "deviceId": "ci-k"})["token"])
-    if any(m["read"] == 0 and m["title"] == "Samy will drive you to work" for m in st["inbox"]):
+    st = api("GET", "/api/state?since=-1&wait=0", token=api("POST", "/api/auth/login", {"person": "kawaii", "password": "ci-pass", "deviceId": "ci-k"})["token"])
+    if any(m["read"] == 0 and m["title"] == "Samuel will drive you to work" for m in st["inbox"]):
         raise SystemExit(f"{n}: mark as read didn't reach the server")
     print(n, "carpool request, answer and mark-as-read all synced")
     page.click("[data-act=back]" if n == "iphone" else "[data-act=side][data-arg=home]")
@@ -183,9 +183,9 @@ def run_flow(page, n):
     page.wait_for_timeout(300)
     shot(page, f"{n}-14-home-light")
     # The edit made above must have reached the server.
-    state = api("POST", "/api/auth/login", {"person": "kayo", "password": "ci-pass", "deviceId": "ci-check"})
+    state = api("POST", "/api/auth/login", {"person": "kawaii", "password": "ci-pass", "deviceId": "ci-check"})
     st = api("GET", "/api/state?since=-1&wait=0", token=state["token"])
-    starts = [d.get("start") for d in st["people"]["kayo"].values()]
+    starts = [d.get("start") for d in st["people"]["kawaii"].values()]
     if 1050 not in starts:
         raise SystemExit(f"{n}: edited shift (start 1050) never reached the server: {starts}")
     print(n, "edit synced to server")

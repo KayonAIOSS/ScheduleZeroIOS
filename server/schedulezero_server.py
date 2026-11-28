@@ -58,10 +58,20 @@ from urllib.request import Request, urlopen
 VERSION = "2.1.0"
 
 PEOPLE = {
-    "samy": {"name": "Samy", "color": "#E53935"},
-    "austin": {"name": "Austin", "color": "#1E88E5"},
-    "kayo": {"name": "Kayo", "color": "#9C4DFF"},
+    "samuel": {"name": "Samuel", "color": "#E53935"},
+    "autism": {"name": "Autism", "color": "#1E88E5"},
+    "kawaii": {"name": "Kawaii", "color": "#9C4DFF"},
 }
+# Ids used before the switch to these names (2026-11). Old data, tokens and app versions still map.
+OLD_IDS = {"sa" + "my": "samuel", "aus" + "tin": "autism", "ka" + "yo": "kawaii"}
+
+
+def pid(person) -> str:
+    """A person id from a request or old data, with old ids mapped to the current ones."""
+    p = str(person or "").strip().lower()
+    return OLD_IDS.get(p, p)
+
+
 PROTOCOL_VERSION = 1
 MAX_WAIT_SECONDS = 25
 KEEP_DAYS = 16 * 7          # history kept on the server
@@ -116,13 +126,40 @@ class Store:
         self.cond = threading.Condition()
         raw = read_json(self.sched_path, {})
         self.rev = int(raw.get("rev", 0))
-        self.people = {p: dict(raw.get("people", {}).get(p, {})) for p in PEOPLE}
-        self.carpools = dict(raw.get("carpools", {}))
-        self.messages = dict(raw.get("messages", {}))
+        self.people = {p: {} for p in PEOPLE}
+        for who, days in (raw.get("people") or {}).items():  # old ids merge into the new ones
+            mine = self.people.setdefault(pid(who), {})
+            for d, e in (days or {}).items():
+                if d not in mine or int(e.get("updated", 0)) > int(mine[d].get("updated", 0)):
+                    mine[d] = e
+        self.people = {p: self.people[p] for p in PEOPLE}
+        self.carpools = {}
+        for cid, rec in dict(raw.get("carpools", {})).items():
+            clean = clean_carpool(rec)
+            if clean:
+                self.carpools[cid] = clean
+        self.messages = {}
+        for mid, msg in dict(raw.get("messages", {})).items():
+            if isinstance(msg, dict):
+                msg["to"], msg["from"] = pid(msg.get("to")), pid(msg.get("from"))
+                self.messages[mid] = msg
         self.devices = read_json(self.dev_path, {})
+        for d in self.devices.values():
+            if isinstance(d, dict) and d.get("person"):
+                d["person"] = pid(d["person"])
+        for old, new in OLD_IDS.items():  # password files of old ids
+            old_path, new_path = os.path.join(self.pw_dir, old + ".json"), os.path.join(self.pw_dir, new + ".json")
+            if os.path.isfile(old_path):
+                if not os.path.isfile(new_path):
+                    os.replace(old_path, new_path)
+                else:
+                    os.remove(old_path)
         # Called with each new inbox message (from this server or a peer), outside the lock.
         self.on_new_message = None
         self._prune()
+        if raw and set(raw.get("people", {})) != set(PEOPLE):
+            self._save_schedules()  # finish moving old ids over
+            atomic_write_json(self.dev_path, self.devices)
 
     # ---------- schedules ----------
 
@@ -158,6 +195,7 @@ class Store:
         }
         if person is None:
             out["messages"] = list(self.messages.values())
+            out["passwords"] = self.password_records()
         else:
             mine = [m for m in self.messages.values() if m.get("to") == person]
             out["inbox"] = sorted(mine, key=lambda m: -int(m.get("created", 0)))[:INBOX_LIMIT]
@@ -203,6 +241,7 @@ class Store:
         total = 0
         if isinstance(people, dict):
             for person, days in people.items():
+                person = pid(person)
                 if person in PEOPLE and isinstance(days, dict):
                     total += self.merge_days(person, days)
         new_msgs = []
@@ -244,6 +283,7 @@ class Store:
             cur["cancelled"] = int(rec["cancelled"])
             changed = 1
         for who, ans in (rec.get("responses") or {}).items():
+            who = pid(who)
             if who in PEOPLE and isinstance(ans, dict) and ans.get("answer") in ("yes", "no"):
                 old = cur.setdefault("responses", {}).get(who)
                 if old is None or int(ans.get("at", 0)) > int(old.get("at", 0)):
@@ -255,7 +295,10 @@ class Store:
 
     def _merge_message(self, msg):
         """Returns (changed, is_new)."""
-        if not isinstance(msg, dict) or not isinstance(msg.get("id"), str) or msg.get("to") not in PEOPLE:
+        if not isinstance(msg, dict) or not isinstance(msg.get("id"), str):
+            return 0, False
+        msg = {**msg, "to": pid(msg.get("to")), "from": pid(msg.get("from"))}
+        if msg["to"] not in PEOPLE:
             return 0, False
         cur = self.messages.get(msg["id"])
         if cur is None:
@@ -384,11 +427,24 @@ class Store:
 
     # ---------- passwords / tokens ----------
 
+    #
+    # Passwords sync between servers like everything else: each record carries `changed` (when
+    # the password was set or reset) and the most recent one wins. Login tokens are shared too, so
+    # signing in on one server signs you in on both. A reset is a record with no hash (not a
+    # deleted file), so the other server can't bring the old password back.
+
     def _pw_path(self, person: str) -> str:
         return os.path.join(self.pw_dir, person + ".json")
 
+    def _pw(self, person: str):
+        rec = read_json(self._pw_path(person), None)
+        if isinstance(rec, dict) and "changed" not in rec:
+            rec["changed"] = int(rec.get("created", 0) or 0)
+        return rec
+
     def has_password(self, person: str) -> bool:
-        return os.path.isfile(self._pw_path(person))
+        rec = self._pw(person)
+        return bool(rec and rec.get("hash"))
 
     def set_password(self, person: str, password: str) -> str:
         with self.cond:
@@ -400,16 +456,22 @@ class Store:
                 "iterations": PBKDF2_ITERATIONS,
                 "hash": _hash_pw(password, salt, PBKDF2_ITERATIONS),
                 "created": now_ms(),
+                "changed": now_ms(),
                 "tokens": [],
             }
             token = self._new_token(person, rec)
             atomic_write_json(self._pw_path(person), rec)
             return token
 
+    def reset_password(self, person: str) -> None:
+        """Forgets the password (and signs out every device); the person creates a new one."""
+        with self.cond:
+            atomic_write_json(self._pw_path(person), {"hash": None, "changed": now_ms(), "tokens": []})
+
     def login(self, person: str, password: str):
         with self.cond:
-            rec = read_json(self._pw_path(person), None)
-            if not rec:
+            rec = self._pw(person)
+            if not rec or not rec.get("hash"):
                 return None
             expected = _hash_pw(password, rec["salt"], int(rec.get("iterations", PBKDF2_ITERATIONS)))
             if not hmac.compare_digest(expected, rec["hash"]):
@@ -424,14 +486,54 @@ class Store:
         rec["tokens"] = rec["tokens"][-50:]  # plenty for a handful of devices
         return token
 
+    def password_records(self) -> dict:
+        out = {}
+        for p in PEOPLE:
+            rec = self._pw(p)
+            if rec:
+                out[p] = {k: rec.get(k) for k in ("salt", "iterations", "hash", "created", "changed", "tokens")}
+        return out
+
+    def merge_passwords(self, incoming) -> int:
+        """Peer sync: the most recently changed password wins; same password = share login tokens."""
+        if not isinstance(incoming, dict):
+            return 0
+        n = 0
+        with self.cond:
+            for person, inc in incoming.items():
+                person = pid(person)
+                if person not in PEOPLE or not isinstance(inc, dict):
+                    continue
+                try:
+                    inc_changed = int(inc.get("changed", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                tokens = [t for t in inc.get("tokens", []) if isinstance(t, str)][-50:]
+                clean = {"salt": inc.get("salt"), "iterations": int(inc.get("iterations") or PBKDF2_ITERATIONS),
+                         "hash": inc.get("hash") or None, "created": int(inc.get("created", 0) or 0),
+                         "changed": inc_changed, "tokens": tokens}
+                if clean["hash"] and not isinstance(clean["salt"], str):
+                    continue
+                cur = self._pw(person)
+                if cur is None or inc_changed > int(cur.get("changed", 0)):
+                    atomic_write_json(self._pw_path(person), clean)
+                    n += 1
+                elif inc_changed == int(cur.get("changed", 0)) and cur.get("hash") == clean["hash"]:
+                    merged = list(dict.fromkeys(cur.get("tokens", []) + tokens))[-50:]
+                    if merged != cur.get("tokens", []):
+                        cur["tokens"] = merged
+                        atomic_write_json(self._pw_path(person), cur)
+                        n += 1
+        return n
+
     def person_for_token(self, token: str):
         if not token or "." not in token:
             return None
-        person = token.split(".", 1)[0]
+        person = pid(token.split(".", 1)[0])
         if person not in PEOPLE:
             return None
-        rec = read_json(self._pw_path(person), None)  # file deleted => every token is void
-        if not rec:
+        rec = self._pw(person)  # reset => every token is void
+        if not rec or not rec.get("hash"):
             return None
         digest = hashlib.sha256(token.encode()).hexdigest()
         return person if any(hmac.compare_digest(digest, t) for t in rec.get("tokens", [])) else None
@@ -493,12 +595,14 @@ def clean_carpool(rec: dict):
         return None
     if day > date.today() + timedelta(days=MAX_FUTURE_DAYS):
         return None
+    rec = {**rec, "from": pid(rec.get("from"))}
     if rec.get("from") not in PEOPLE or rec.get("kind") not in ("request", "offer") or rec.get("dir") not in ("to", "from"):
         return None
     to = rec.get("to")
-    to = sorted({p for p in to if p in PEOPLE}) if isinstance(to, list) else []
+    to = sorted({pid(p) for p in to if pid(p) in PEOPLE}) if isinstance(to, list) else []
     responses = {}
     for who, ans in (rec.get("responses") or {}).items():
+        who = pid(who)
         if who in to and isinstance(ans, dict) and ans.get("answer") in ("yes", "no"):
             responses[who] = {"answer": ans["answer"], "at": int(ans.get("at", 0) or 0)}
     created = int(rec.get("created", 0) or 0)
@@ -613,6 +717,9 @@ class PushStore:
         self.store = store
         self.lock = threading.Lock()
         self.devices = read_json(self.path, {}).get("devices", {})
+        for d in self.devices.values():
+            if d.get("person"):
+                d["person"] = pid(d["person"])
         self.vapid = Vapid(os.path.join(data_dir, "vapid.json"))
 
     def _save(self) -> None:
@@ -1020,7 +1127,7 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 msg = push.pop_inbox((q.get("device") or [""])[0], (q.get("key") or [""])[0])
                 return self._send(200, {"message": msg})
             if url.path == "/api/auth/status":
-                person = (q.get("person") or [""])[0].lower()
+                person = pid((q.get("person") or [""])[0])
                 if person not in PEOPLE:
                     return self._send(400, {"error": "unknown person"})
                 return self._send(200, {"person": person, "hasPassword": store.has_password(person)})
@@ -1057,7 +1164,7 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 return
             body = self._body()
             if url.path in ("/api/auth/setup", "/api/auth/login"):
-                person = str(body.get("person", "")).lower()
+                person = pid(body.get("person", ""))
                 password = str(body.get("password", ""))
                 if person not in PEOPLE:
                     return self._send(400, {"error": "unknown person"})
@@ -1082,6 +1189,7 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 if not self._peer_ok():
                     return
                 applied = store.merge_all(body.get("people"), body.get("carpools"), body.get("messages"))
+                applied += store.merge_passwords(body.get("passwords"))
                 return self._send(200, {"applied": applied, "rev": store.rev})
             if url.path == "/api/carpool":
                 person = self._auth()
@@ -1165,9 +1273,9 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
 
 
 def reset_passwords(store: Store, spec: str) -> None:
-    """SZ_RESET_PASSWORDS=kayo,samy resets those passwords once, for servers without a shell (TrueNAS):
+    """SZ_RESET_PASSWORDS=kawaii,samuel resets those passwords once, for servers without a shell (TrueNAS):
     set it, save, and it happens on start. It runs again only if the value changes, so it can stay set.
-    Add anything to repeat it, e.g. "kayo #2". Schedules are kept."""
+    Add anything to repeat it, e.g. "kawaii #2". Schedules are kept."""
     spec = spec.strip()
     marker = os.path.join(store.dir, "password-resets-done.txt")
     try:
@@ -1178,10 +1286,10 @@ def reset_passwords(store: Store, spec: str) -> None:
         pass
     if not spec:
         return
-    for p in {w.strip().lower().split(" ")[0] for w in spec.split(",")}:
+    for p in {pid(w.strip().split(" ")[0]) for w in spec.split(",") if w.strip()}:
         if p in PEOPLE:
             try:
-                os.remove(store._pw_path(p))
+                store.reset_password(p)
                 print(f"password reset: {p}", flush=True)
             except FileNotFoundError:
                 pass
@@ -1198,8 +1306,9 @@ def peer_sync_loop(store: Store, peers, key: str, interval: float, verbose: bool
                 with urlopen(req, timeout=15) as r:
                     theirs = json.loads(r.read().decode("utf-8"))
                 store.merge_all(theirs.get("people"), theirs.get("carpools"), theirs.get("messages"))
+                store.merge_passwords(theirs.get("passwords"))
                 snap = store.snapshot()
-                mine = json.dumps({k: snap[k] for k in ("people", "carpools", "messages")}).encode("utf-8")
+                mine = json.dumps({k: snap[k] for k in ("people", "carpools", "messages", "passwords")}).encode("utf-8")
                 req = Request(base.rstrip("/") + "/api/peer/merge", data=mine, method="POST",
                               headers={"X-Peer-Key": key, "Content-Type": "application/json"})
                 with urlopen(req, timeout=15) as r:
@@ -1222,7 +1331,18 @@ def main():
                     help="folder with the built web app (served at /). Missing folder = sync-only server")
     ap.add_argument("--base", default=os.environ.get("SZ_BASE_PATH", ""),
                     help="web address prefix, e.g. /ScheduleZero (works whether or not the proxy strips it)")
+    ap.add_argument("--reset-password", metavar="PERSON",
+                    help="forget PERSON's password (on every server after the next sync) and exit")
     args = ap.parse_args()
+
+    if args.reset_password:
+        st = Store(args.data)
+        who = pid(args.reset_password)
+        if who not in PEOPLE:
+            sys.exit("unknown person: " + args.reset_password)
+        st.reset_password(who)
+        print(f"Password for {who} reset. Their devices will ask for a new one.")
+        return
 
     global BASE_PATH
     BASE_PATH = ("/" + args.base.strip("/")) if args.base.strip("/") else ""
