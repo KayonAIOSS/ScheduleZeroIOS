@@ -105,6 +105,12 @@ pub struct Settings {
     pub carpool_window: i32,
     /// Shift reminders mention who you're riding with.
     pub carpool_in_reminders: bool,
+    /// App theme id (see themes.rs). Empty = Midnight or Daylight from `dark_mode`. Follows the account.
+    pub theme: String,
+    /// When the theme was last changed (server clock), for "most recent change wins".
+    pub theme_updated: i64,
+    /// Changed here but not sent to the server yet.
+    pub theme_pending: bool,
 }
 
 pub const CARPOOL_WINDOWS: [i32; 4] = [0, 15, 30, 60];
@@ -124,6 +130,9 @@ impl Default for Settings {
             suggest_carpools: true,
             carpool_window: 0,
             carpool_in_reminders: true,
+            theme: String::new(),
+            theme_updated: 0,
+            theme_pending: false,
         }
     }
 }

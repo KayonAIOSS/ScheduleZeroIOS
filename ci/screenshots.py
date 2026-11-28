@@ -176,8 +176,13 @@ def run_flow(page, n):
         page.evaluate("window.scrollBy(0, 900)")
         shot(page, f"{n}-12-settings-scrolled")
         page.evaluate("window.scrollBy(0, -3000)")
-    page.click("[data-act=s-dark]")
-    page.wait_for_timeout(300)
+    page.click("[data-act=theme][data-arg=daylight]")
+    page.wait_for_timeout(1200)
+    tok = api("POST", "/api/auth/login", {"person": "kawaii", "password": "ci-pass", "deviceId": "ci-theme"})["token"]
+    prefs = api("GET", "/api/state?since=-1&wait=0", token=tok).get("prefs", {})
+    if prefs.get("theme") != "daylight":
+        raise SystemExit(f"{n}: theme didn't reach the account: {prefs}")
+    print(n, "theme saved to the account")
     shot(page, f"{n}-13-settings-light")
     page.click("[data-act=back]" if n == "iphone" else "[data-act=side][data-arg=home]")
     page.wait_for_timeout(300)

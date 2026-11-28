@@ -46,16 +46,17 @@ pub fn render() {
 }
 
 fn after_render() {
-    let (dark, overlay) = with(|a| (a.repo.data.settings.dark_mode, a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some() || a.ui.carpool.is_some()));
-    let theme = if dark { "dark" } else { "light" }.to_string();
-    let changed = LAST_THEME.with(|t| *t.borrow() != theme);
+    let (theme_id, dark_setting, overlay) = with(|a| (a.repo.data.settings.theme.clone(), a.repo.data.settings.dark_mode, a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some() || a.ui.carpool.is_some()));
+    let t = crate::themes::find(&theme_id, dark_setting);
+    let changed = LAST_THEME.with(|l| *l.borrow() != t.id);
     if let Some(html) = document().document_element() {
         if changed {
-            let _ = html.set_attribute("data-theme", &theme);
+            let _ = html.set_attribute("data-theme", if t.dark { "dark" } else { "light" });
+            let _ = html.set_attribute("style", &crate::themes::css(t));
             if let Ok(Some(meta)) = document().query_selector("meta[name=theme-color]") {
-                let _ = meta.set_attribute("content", if dark { "#000000" } else { "#F6FBFD" });
+                let _ = meta.set_attribute("content", t.colors[7]);
             }
-            LAST_THEME.with(|t| *t.borrow_mut() = theme);
+            LAST_THEME.with(|l| *l.borrow_mut() = t.id.to_string());
         }
         let _ = if overlay { html.class_list().add_1("lock") } else { html.class_list().remove_1("lock") };
     }

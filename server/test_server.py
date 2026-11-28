@@ -425,6 +425,31 @@ class PeerMergeTests(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class PrefsTests(unittest.TestCase):
+    def test_theme_follows_the_account_and_newest_wins_between_servers(self):
+        dirs = [tempfile.mkdtemp(), tempfile.mkdtemp()]
+        try:
+            a, b = sz.Store(dirs[0]), sz.Store(dirs[1])
+            a.set_prefs("kawaii", {"theme": "forest", "updated": 100})
+            self.assertEqual(a.snapshot("kawaii")["prefs"]["theme"], "forest")
+            self.assertEqual(a.snapshot("samuel")["prefs"], {})
+            b.set_prefs("kawaii", {"theme": "ocean", "updated": 200})
+            sa, sb = a.snapshot(), b.snapshot()
+            a.merge_all(sb["people"], sb["carpools"], sb["messages"], sb["prefs"])
+            b.merge_all(sa["people"], sa["carpools"], sa["messages"], sa["prefs"])
+            for s in (a, b):
+                self.assertEqual(s.prefs["kawaii"]["theme"], "ocean")
+            a.set_prefs("kawaii", {"theme": "rose", "updated": 150})  # older than what's there
+            self.assertEqual(a.prefs["kawaii"]["theme"], "ocean")
+            a.set_prefs("kawaii", {"theme": "x;<bad>", "updated": 999})
+            self.assertEqual(a.prefs["kawaii"]["theme"], "ocean")
+            self.assertLessEqual(a.set_prefs("kawaii", {"theme": "mint", "updated": sz.now_ms() * 2})["updated"], sz.now_ms())
+            self.assertEqual(sz.Store(dirs[0]).prefs["kawaii"]["theme"], "mint")  # saved
+        finally:
+            for d in dirs:
+                shutil.rmtree(d)
+
+
 class AccountSyncTests(unittest.TestCase):
     def setUp(self):
         self.dirs = [tempfile.mkdtemp(), tempfile.mkdtemp()]

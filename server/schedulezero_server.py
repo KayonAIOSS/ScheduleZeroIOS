@@ -55,7 +55,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 PEOPLE = {
     "samuel": {"name": "Samuel", "color": "#E53935"},
@@ -143,6 +143,11 @@ class Store:
             if isinstance(msg, dict):
                 msg["to"], msg["from"] = pid(msg.get("to")), pid(msg.get("from"))
                 self.messages[mid] = msg
+        # Per-account preferences that follow the person to every device (e.g. the app theme).
+        self.prefs = {}
+        for who, rec in dict(raw.get("prefs", {})).items():
+            if pid(who) in PEOPLE and isinstance(rec, dict):
+                self.prefs[pid(who)] = rec
         self.devices = read_json(self.dev_path, {})
         for d in self.devices.values():
             if isinstance(d, dict) and d.get("person"):
@@ -175,8 +180,8 @@ class Store:
             del self.messages[mid]
 
     def _save_schedules(self) -> None:
-        atomic_write_json(self.sched_path, {"rev": self.rev, "people": self.people,
-                                            "carpools": self.carpools, "messages": self.messages})
+        atomic_write_json(self.sched_path, {"rev": self.rev, "people": self.people, "carpools": self.carpools,
+                                            "messages": self.messages, "prefs": self.prefs})
 
     def _changed(self) -> None:
         """Call with the lock held after any change: new revision, save, wake long-polls."""
@@ -194,11 +199,13 @@ class Store:
             "carpools": sorted(self.carpools.values(), key=lambda c: (c.get("day", ""), c.get("created", 0))),
         }
         if person is None:
+            out["prefs"] = dict(self.prefs)
             out["messages"] = list(self.messages.values())
             out["passwords"] = self.password_records()
         else:
             mine = [m for m in self.messages.values() if m.get("to") == person]
             out["inbox"] = sorted(mine, key=lambda m: -int(m.get("created", 0)))[:INBOX_LIMIT]
+            out["prefs"] = self.prefs.get(person, {})
         return out
 
     def wait_for_change(self, since: int, wait: float, person: str = None) -> dict:
@@ -236,7 +243,7 @@ class Store:
                 self._changed()
         return applied
 
-    def merge_all(self, people: dict, carpools=None, messages=None) -> int:
+    def merge_all(self, people: dict, carpools=None, messages=None, prefs=None) -> int:
         """Peer sync: schedules, carpools and inbox messages from another server."""
         total = 0
         if isinstance(people, dict):
@@ -249,6 +256,8 @@ class Store:
             changed = 0
             for rec in carpools if isinstance(carpools, list) else []:
                 changed += self._merge_carpool(rec)
+            for who, rec in (prefs.items() if isinstance(prefs, dict) else []):
+                changed += self._merge_prefs(pid(who), rec)
             for msg in messages if isinstance(messages, list) else []:
                 n, is_new = self._merge_message(msg)
                 changed += n
@@ -258,6 +267,37 @@ class Store:
                 self._changed()
         self._announce(new_msgs)
         return total + changed
+
+    # ---------- preferences ----------
+
+    def _merge_prefs(self, person: str, rec) -> int:
+        """The most recently changed preferences win (call with the lock held)."""
+        if person not in PEOPLE or not isinstance(rec, dict):
+            return 0
+        try:
+            updated = int(rec.get("updated", 0))
+        except (TypeError, ValueError):
+            return 0
+        theme = str(rec.get("theme", ""))[:32]
+        if theme and not all(c.isalnum() or c == "-" for c in theme):
+            return 0
+        if updated <= int(self.prefs.get(person, {}).get("updated", 0)):
+            return 0
+        self.prefs[person] = {"theme": theme, "updated": updated}
+        return 1
+
+    def set_prefs(self, person: str, rec: dict) -> dict:
+        """From a device. Its time can't be in the future (same rule as schedule edits)."""
+        with self.cond:
+            rec = dict(rec or {})
+            try:
+                if int(rec.get("updated", 0)) > now_ms() + FUTURE_SLACK_MS:
+                    rec["updated"] = now_ms()
+            except (TypeError, ValueError):
+                rec["updated"] = now_ms()
+            if self._merge_prefs(person, rec):
+                self._changed()
+            return self.prefs.get(person, {})
 
     # ---------- carpools & inbox ----------
     #
@@ -1188,7 +1228,7 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
             if url.path == "/api/peer/merge":
                 if not self._peer_ok():
                     return
-                applied = store.merge_all(body.get("people"), body.get("carpools"), body.get("messages"))
+                applied = store.merge_all(body.get("people"), body.get("carpools"), body.get("messages"), body.get("prefs"))
                 applied += store.merge_passwords(body.get("passwords"))
                 return self._send(200, {"applied": applied, "rev": store.rev})
             if url.path == "/api/carpool":
@@ -1210,6 +1250,12 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 except ValueError as e:
                     return self._send(400, {"error": str(e)})
                 return self._send(200, {"carpool": rec, "rev": store.rev, "serverTime": now_ms()})
+            if url.path == "/api/prefs":
+                person = self._auth()
+                if not person:
+                    return
+                prefs = store.set_prefs(person, body)
+                return self._send(200, {"prefs": prefs, "rev": store.rev, "serverTime": now_ms()})
             if url.path == "/api/inbox/read":
                 person = self._auth()
                 if not person:
@@ -1305,10 +1351,10 @@ def peer_sync_loop(store: Store, peers, key: str, interval: float, verbose: bool
                 req = Request(base.rstrip("/") + "/api/peer/state", headers={"X-Peer-Key": key})
                 with urlopen(req, timeout=15) as r:
                     theirs = json.loads(r.read().decode("utf-8"))
-                store.merge_all(theirs.get("people"), theirs.get("carpools"), theirs.get("messages"))
+                store.merge_all(theirs.get("people"), theirs.get("carpools"), theirs.get("messages"), theirs.get("prefs"))
                 store.merge_passwords(theirs.get("passwords"))
                 snap = store.snapshot()
-                mine = json.dumps({k: snap[k] for k in ("people", "carpools", "messages", "passwords")}).encode("utf-8")
+                mine = json.dumps({k: snap[k] for k in ("people", "carpools", "messages", "passwords", "prefs")}).encode("utf-8")
                 req = Request(base.rstrip("/") + "/api/peer/merge", data=mine, method="POST",
                               headers={"X-Peer-Key": key, "Content-Type": "application/json"})
                 with urlopen(req, timeout=15) as r:

@@ -272,6 +272,7 @@ pub fn click(act: &str, arg: &str) {
 
         // ---- settings ----
         "s-dark" => setting(|s| s.dark_mode = !s.dark_mode),
+        "theme" => sync::set_theme(arg),
         "s-24h" => setting(|s| s.use24h = !s.use24h),
         "s-defrem" => {
             let turning_on = with(|a| !a.repo.data.settings.default_reminders);

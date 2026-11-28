@@ -10,6 +10,7 @@ mod model;
 mod push;
 mod store;
 mod sync;
+mod themes;
 mod time;
 mod ui;
 

@@ -562,6 +562,7 @@ async fn live_loop(gen: u32) {
                 Some(t) => {
                     push_to(&server, &t).await;
                     flush_reads(&server, &t).await;
+                    flush_prefs(&server, &t).await;
                     let settled = with(|a| {
                         a.status.connection == Connection::Online
                             && a.status.auth == Auth::SignedIn
@@ -613,9 +614,20 @@ fn apply_state(server: &str, v: &Value) {
     let carpools: Option<Vec<Carpool>> = (!unchanged).then(|| serde_json::from_value(v["carpools"].clone()).ok()).flatten();
     let inbox: Option<Vec<InboxMessage>> = (!unchanged).then(|| serde_json::from_value(v["inbox"].clone()).ok()).flatten();
     let before: Vec<String> = with(|a| a.repo.data.inbox.iter().map(|m| m.id.clone()).collect());
+    let theme = v["prefs"]["theme"].as_str().map(str::to_string);
+    let theme_updated = v["prefs"]["updated"].as_i64().unwrap_or(0);
     with_mut(|a| {
         if let Some(p) = &people {
             a.repo.apply_server(p);
+        }
+        // The account's theme: a newer one from another device wins.
+        if let Some(t) = theme {
+            let s = &mut a.repo.data.settings;
+            if theme_updated > s.theme_updated {
+                s.theme = t;
+                s.theme_updated = theme_updated;
+                s.theme_pending = false;
+            }
         }
         a.repo.apply_server_extras(carpools, inbox);
         a.saved.revs.insert(server.to_string(), rev);
@@ -639,6 +651,48 @@ fn apply_state(server: &str, v: &Value) {
         app::commit();
     } else {
         crate::dom::request_render();
+    }
+}
+
+/// Picks a theme: here at once, on the account (server) now or on the next sync.
+pub fn set_theme(id: &str) {
+    let id = id.to_string();
+    with_mut(|a| {
+        let s = &mut a.repo.data.settings;
+        s.theme = id;
+        s.theme_updated = edit_time();
+        s.theme_pending = true;
+    });
+    app::commit();
+    spawn_local(async {
+        for s in with(|a| a.saved.servers()) {
+            let Some(t) = with(|a| a.saved.token(&s)) else { continue };
+            if flush_prefs(&s, &t).await {
+                break;
+            }
+        }
+    });
+}
+
+async fn flush_prefs(server: &str, token: &str) -> bool {
+    let (pending, theme, updated) = with(|a| {
+        let s = &a.repo.data.settings;
+        (s.theme_pending, s.theme.clone(), s.theme_updated)
+    });
+    if !pending {
+        return true;
+    }
+    match api_at(server, "POST", "/api/prefs", Some(token), Some(json!({"theme": theme, "updated": updated})), 15_000).await {
+        Ok(_) => {
+            with_mut(|a| {
+                if a.repo.data.settings.theme_updated == updated {
+                    a.repo.data.settings.theme_pending = false;
+                }
+            });
+            app::commit();
+            true
+        }
+        Err(_) => false,
     }
 }
 

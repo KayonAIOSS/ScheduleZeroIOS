@@ -497,7 +497,7 @@ pub fn settings(a: &App, now: LocalTime) -> String {
         "Appearance",
         &format!(
             r#"{}<div class="divider"></div>{}"#,
-            toggle_row("Dark mode", "Pitch black with purple. Off = light with cyan.", s.dark_mode, "s-dark"),
+            theme_picker(crate::themes::find(&s.theme, s.dark_mode).id),
             toggle_row("24-hour clock", "Show 16:00 instead of 4:00 PM", s.use24h, "s-24h")
         ),
     ));
@@ -727,4 +727,23 @@ pub fn inbox(a: &App) -> String {
         r#"{}<div class="content">{list}</div>"#,
         top_bar(r#"<span class="t-title-l">Inbox</span>"#, true, &all)
     )
+}
+
+/// Theme swatches. The choice is saved on this device and on your account, so it follows you.
+fn theme_picker(selected: &str) -> String {
+    let mut out = String::from(r#"<div class="list-col"><div class="t-title">Theme</div><div class="t-small dim">Saved to your account, so it's the same on every device.</div><div class="themes mt8">"#);
+    for t in crate::themes::THEMES.iter() {
+        out.push_str(&format!(
+            r#"<button class="theme-swatch{}" data-act="theme" data-arg="{}" aria-pressed="{}"><span class="swatch" style="background:{};border-color:{}"><span style="background:{}"></span></span><span class="t-label">{}</span></button>"#,
+            if t.id == selected { " on" } else { "" },
+            t.id,
+            t.id == selected,
+            t.colors[7],
+            t.colors[15],
+            t.colors[0],
+            t.name
+        ));
+    }
+    out.push_str("</div></div>");
+    out
 }
