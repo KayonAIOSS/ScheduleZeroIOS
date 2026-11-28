@@ -17,6 +17,26 @@ pub enum Route {
     /// Week screen showing the week starting on this Monday.
     Week(Day),
     Settings,
+    Inbox,
+}
+
+/// Writing a new carpool request/offer in the carpool sheet.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Compose {
+    pub dir: crate::model::Dir,
+    /// "request" (I need a ride) or "offer" (I can drive)
+    pub kind: &'static str,
+    pub to: Vec<Person>,
+    pub note: String,
+}
+
+/// The carpool sheet for one day (both directions).
+#[derive(Clone, PartialEq, Debug)]
+pub struct CarpoolSheet {
+    pub date: Day,
+    pub compose: Option<Compose>,
+    pub busy: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -66,6 +86,9 @@ pub struct Ui {
     pub rate_text: String,
     pub install_dismissed: bool,
     pub server_version: Option<String>,
+    pub carpool: Option<CarpoolSheet>,
+    /// The backup-server field in Settings, as typed.
+    pub backup_text: String,
 }
 
 impl Ui {
@@ -94,6 +117,7 @@ pub fn init() {
     let ui = Ui {
         stack: vec![Route::Home],
         rate_text,
+        backup_text: saved.secondary.clone(),
         install_dismissed: storage_get("sz.installDismissed").is_some(),
         ..Default::default()
     };

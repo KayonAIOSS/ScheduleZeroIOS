@@ -3,12 +3,16 @@
 // awkward to reach from Rust: service worker registration, push subscriptions and install prompts.
 (function () {
   'use strict';
+  // Where the app lives, e.g. "/ScheduleZero" (from this script's own address), so it works
+  // under any path prefix the reverse proxy uses.
+  const BASE = new URL('.', document.currentScript.src).pathname.replace(/\/$/, '');
+  window.szBase = () => BASE;
   let installEvent = null;
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
   window.addEventListener('appinstalled', () => { installEvent = null; });
 
   window.szRegisterServiceWorker = () => {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' }).catch(() => {});
   };
   window.szIsStandalone = () =>
     window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -47,7 +51,7 @@
       if (perm !== 'granted') return '';
       let key = publicKey;
       if (!key) {
-        const r = await fetch('/api/push/key', { cache: 'no-store' });
+        const r = await fetch(BASE + '/api/push/key', { cache: 'no-store' });
         key = (await r.json()).publicKey;
       }
       const reg = await navigator.serviceWorker.ready;
@@ -65,7 +69,7 @@
   window.szCurrentSubscription = async () => {
     try {
       if (!window.szPushSupported()) return '';
-      const reg = await navigator.serviceWorker.getRegistration('/');
+      const reg = await navigator.serviceWorker.getRegistration(BASE + '/');
       const sub = reg && (await reg.pushManager.getSubscription());
       return sub ? JSON.stringify(sub.toJSON()) : '';
     } catch (_) {
@@ -73,11 +77,26 @@
     }
   };
 
+  // A new inbox message while the page is open and this site can't push to it (e.g. on the
+  // backup server). Tapping it opens the inbox.
+  window.szShowNotification = (title, body, id) => {
+    try {
+      navigator.serviceWorker.ready.then((reg) =>
+        reg.showNotification(title, { body, tag: 'msg-' + id, icon: BASE + '/icon-192.png', data: { message: id, local: true } }));
+    } catch (_) {}
+  };
+  // A notification tap asks an open page to show the inbox.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.open === 'inbox') location.hash = 'inbox';
+    });
+  }
+
   // The service worker reads this to fetch reminder text when a push arrives.
   window.szSaveSession = async (json) => {
     try {
       const c = await caches.open('sz-session');
-      await c.put('/__sz/session', new Response(json, { headers: { 'Content-Type': 'application/json' } }));
+      await c.put(BASE + '/__sz/session', new Response(json, { headers: { 'Content-Type': 'application/json' } }));
     } catch (_) {}
     return '';
   };

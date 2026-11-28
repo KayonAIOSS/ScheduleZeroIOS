@@ -4,6 +4,7 @@
 mod actions;
 mod app;
 mod browser;
+mod carpool;
 mod dom;
 mod model;
 mod push;
@@ -19,6 +20,7 @@ fn main() {
     browser::glue("szRegisterServiceWorker", &[]);
     app::init();
     dom::install_listeners();
+    dom::open_from_hash();
     dom::render();
     if let Some(boot) = browser::document().get_element_by_id("boot") {
         boot.remove();

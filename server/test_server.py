@@ -68,8 +68,10 @@ class ServerTests(unittest.TestCase):
             f.write(b"\0asm" + b"\1" * 3000)
         with open(os.path.join(cls.tmp, "secret.txt"), "w") as f:
             f.write("nope")
+        sz.BASE_PATH = "/ScheduleZero"
         cls.store = sz.Store(os.path.join(cls.tmp, "data"))
         cls.push = sz.PushStore(cls.store.dir, cls.store)
+        cls.store.on_new_message = cls.push.notify_message
         static = sz.StaticFiles(web)
         cls.httpd = sz.QuietServer(("127.0.0.1", 0), sz.make_handler(cls.store, False, cls.push, static))
         cls.base = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
@@ -237,6 +239,160 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertTrue(got["authorization"].startswith("vapid t="))
         self.assertEqual(got["ttl"], "21600")
+
+    # ---- web address prefix, CORS ----
+
+    def test_works_under_schedulezero_prefix_or_stripped(self):
+        self.assertIn(b"<title>SZ</title>", self.req("GET", "/ScheduleZero/")[1])
+        self.assertIn(b"<title>SZ</title>", self.req("GET", "/schedulezero/")[1])  # any case
+        self.assertTrue(json.loads(self.req("GET", "/ScheduleZero/api/ping")[1])["ok"])
+        self.assertTrue(json.loads(self.req("GET", "/api/ping")[1])["ok"])  # proxy stripped it
+        conn = __import__("http.client").client.HTTPConnection("127.0.0.1", self.httpd.server_address[1])
+        conn.request("GET", "/ScheduleZero")
+        r = conn.getresponse()
+        self.assertEqual((r.status, r.getheader("Location")), (301, "/ScheduleZero/"))
+        conn.close()
+
+    def test_cors_for_backup_server_use(self):
+        st, _, h = self.req("OPTIONS", "/ScheduleZero/api/state")
+        self.assertEqual(st, 204)
+        self.assertEqual(h["Access-Control-Allow-Origin"], "*")
+        self.assertIn("Authorization", h["Access-Control-Allow-Headers"])
+        self.assertEqual(self.req("GET", "/api/ping")[2]["Access-Control-Allow-Origin"], "*")
+
+    # ---- carpools & inbox ----
+
+    def carpool(self, token, **body):
+        st, raw, _ = self.req("POST", "/ScheduleZero/api/carpool", body, token)
+        return st, json.loads(raw)
+
+    def inbox(self, token):
+        st, raw, _ = self.req("GET", "/api/state?since=-1&wait=0", token=token)
+        return json.loads(raw)
+
+    def test_carpool_request_answer_cancel_and_inbox(self):
+        kayo, samy, austin = self.token("kayo"), self.token("samy"), self.token("austin")
+        day = (date.today() + timedelta(days=2)).isoformat()
+        self.req("POST", "/api/schedule", {"days": {day: {"type": "work", "start": 960, "end": 1440, "updated": 1}}}, kayo)
+        st, r = self.carpool(kayo, action="create", kind="request", day=day, dir="to", to=["samy", "austin"], note="pls")
+        self.assertEqual(st, 200)
+        cid = r["carpool"]["id"]
+        self.assertEqual(r["carpool"]["to"], ["austin", "samy"])
+        # Both got a message; it names the start time.
+        s_inbox = [m for m in self.inbox(samy)["inbox"] if m["carpool"] == cid]
+        self.assertEqual(len(s_inbox), 1)
+        self.assertEqual(s_inbox[0]["title"], "Kayo asks for a ride to work")
+        self.assertIn("starts 4:00 PM", s_inbox[0]["body"])
+        self.assertEqual(s_inbox[0]["read"], 0)
+        self.assertTrue(any(m["carpool"] == cid for m in self.inbox(austin)["inbox"]))
+        self.assertFalse(any(m["carpool"] == cid for m in self.inbox(kayo)["inbox"]))
+        # Everyone sees the carpool itself.
+        self.assertTrue(any(c["id"] == cid for c in self.inbox(austin)["carpools"]))
+
+        # Only recipients can answer; answering notifies the sender.
+        self.assertEqual(self.carpool(kayo, action="respond", id=cid, answer="yes")[0], 400)
+        st, r = self.carpool(samy, action="respond", id=cid, answer="yes")
+        self.assertEqual(r["carpool"]["responses"]["samy"]["answer"], "yes")
+        k_msgs = [m for m in self.inbox(kayo)["inbox"] if m["carpool"] == cid]
+        self.assertEqual(k_msgs[0]["title"], "Samy will drive you to work")
+
+        # Mark as read: one message, then all.
+        st, raw, _ = self.req("POST", "/api/inbox/read", {"ids": [s_inbox[0]["id"]]}, samy)
+        self.assertEqual(json.loads(raw)["marked"], 1)
+        self.assertTrue(all(m["read"] for m in self.inbox(samy)["inbox"] if m["carpool"] == cid))
+        self.req("POST", "/api/inbox/read", {"all": True}, kayo)
+        self.assertTrue(all(m["read"] for m in self.inbox(kayo)["inbox"]))
+
+        # Only the sender can cancel; recipients get told.
+        self.assertEqual(self.carpool(samy, action="cancel", id=cid)[0], 400)
+        st, r = self.carpool(kayo, action="cancel", id=cid)
+        self.assertTrue(r["carpool"]["cancelled"])
+        titles = [m["title"] for m in self.inbox(austin)["inbox"] if m["carpool"] == cid]
+        self.assertIn("Kayo cancelled the carpool to work", titles)
+        self.assertEqual(self.carpool(austin, action="respond", id=cid, answer="yes")[0], 400)
+
+    def test_carpool_validation(self):
+        kayo = self.token("kayo")
+        day = date.today().isoformat()
+        for bad in [dict(kind="x", dir="to", to=["samy"]), dict(kind="offer", dir="up", to=["samy"]),
+                    dict(kind="offer", dir="to", to=[]), dict(kind="offer", dir="to", to=["kayo"])]:
+            self.assertEqual(self.carpool(kayo, action="create", day=day, **bad)[0], 400, bad)
+        st, r = self.carpool(kayo, action="create", kind="offer", day=day, dir="from", to=["samy"])
+        self.assertEqual(st, 200)
+        samy = self.token("samy")
+        msg = [m for m in self.inbox(samy)["inbox"] if m["carpool"] == r["carpool"]["id"]][0]
+        self.assertEqual(msg["title"], "Kayo can drive you home from work")
+
+    def test_new_message_is_pushed_with_mark_as_read(self):
+        samy = self.token("samy")
+        sub = {"endpoint": "https://push.example.invalid/samy", "keys": {}}
+        st, raw, _ = self.req("POST", "/api/push/subscribe", {"deviceId": "dev-s", "subscription": sub}, samy)
+        key = json.loads(raw)["key"]
+        self.push.due(sz.now_ms())  # flush anything earlier
+        kayo = self.token("kayo")
+        st, r = self.carpool(kayo, action="create", kind="offer", day=date.today().isoformat(), dir="to", to=["samy"])
+        due = self.push.due(sz.now_ms())
+        self.assertIn(("dev-s", sub["endpoint"]), due)
+        st, raw, _ = self.req("GET", "/api/push/inbox?device=dev-s&key=" + key)
+        n = json.loads(raw)["message"]
+        self.assertTrue(n["message"])
+        st, raw, _ = self.req("POST", "/api/push/read", {"deviceId": "dev-s", "key": key, "id": n["message"]})
+        self.assertEqual(st, 200)
+        self.assertTrue(all(m["read"] for m in self.inbox(samy)["inbox"] if m["id"] == n["message"]))
+        # Carpool notifications switched off for that browser: no push.
+        self.req("POST", "/api/push/schedule", {"deviceId": "dev-s", "items": [], "messages": False}, samy)
+        self.carpool(kayo, action="create", kind="offer", day=date.today().isoformat(), dir="from", to=["samy"])
+        self.assertNotIn(("dev-s", sub["endpoint"]), self.push.due(sz.now_ms()))
+
+
+class PeerMergeTests(unittest.TestCase):
+    def test_carpools_and_messages_merge_between_servers(self):
+        a_dir, b_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+        try:
+            a, b = sz.Store(a_dir), sz.Store(b_dir)
+            announced = []
+            b.on_new_message = announced.append
+            day = (date.today() + timedelta(days=1)).isoformat()
+            rec = a.carpool_create("kayo", "request", day, "from", ["samy", "austin"])
+            snap = a.snapshot()
+            b.merge_all(snap["people"], snap["carpools"], snap["messages"])
+            self.assertIn(rec["id"], b.carpools)
+            self.assertEqual(len(announced), 2)  # fresh messages get pushed on the other server too
+            # Samy answers on A, Austin on B at the same time; both answers survive both ways.
+            a.carpool_respond("samy", rec["id"], "yes")
+            b.carpool_respond("austin", rec["id"], "no")
+            sa, sb = a.snapshot(), b.snapshot()
+            a.merge_all(sb["people"], sb["carpools"], sb["messages"])
+            b.merge_all(sa["people"], sa["carpools"], sa["messages"])
+            for s in (a, b):
+                self.assertEqual({k: v["answer"] for k, v in s.carpools[rec["id"]]["responses"].items()},
+                                 {"samy": "yes", "austin": "no"})
+                self.assertEqual(len([m for m in s.messages.values() if m["to"] == "kayo"]), 2)
+            # Read on one server -> read on the other.
+            a.mark_read("kayo")
+            sa = a.snapshot()
+            b.merge_all(sa["people"], sa["carpools"], sa["messages"])
+            self.assertTrue(all(m["read"] for m in b.messages.values() if m["to"] == "kayo"))
+            # Restart keeps it all.
+            self.assertIn(rec["id"], sz.Store(b_dir).carpools)
+        finally:
+            shutil.rmtree(a_dir)
+            shutil.rmtree(b_dir)
+
+    def test_password_reset_from_setting_runs_once(self):
+        d = tempfile.mkdtemp()
+        try:
+            s = sz.Store(d)
+            s.set_password("kayo", "abcd")
+            sz.reset_passwords(s, "kayo")
+            self.assertFalse(s.has_password("kayo"))
+            s.set_password("kayo", "efgh")
+            sz.reset_passwords(s, "kayo")  # same setting again (restart): nothing happens
+            self.assertTrue(s.has_password("kayo"))
+            sz.reset_passwords(s, "kayo #2")
+            self.assertFalse(s.has_password("kayo"))
+        finally:
+            shutil.rmtree(d)
 
 
 if __name__ == "__main__":

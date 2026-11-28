@@ -2,8 +2,8 @@
 //! Bottom sheets on phones, centred dialogs on desktop (same markup, different CSS).
 
 use super::*;
-use crate::app::{App, Confirm, EditMode, Pick};
-use crate::model::{work_time, AppData, DayPlan, Person};
+use crate::app::{App, CarpoolSheet, Confirm, EditMode, Pick};
+use crate::model::{work_time, AppData, Carpool, DayPlan, Dir, Person};
 use crate::time::{fmt, Day, LocalTime};
 use std::fmt::Write;
 
@@ -18,6 +18,9 @@ pub fn overlays(a: &App, now: LocalTime) -> String {
     let mut out = String::new();
     if let Some(d) = a.ui.comparing {
         out.push_str(&overlay("ov-compare", &format!("{kind} wide"), &compare(d, &a.repo.data)));
+    }
+    if let Some(sheet) = &a.ui.carpool {
+        out.push_str(&overlay("ov-carpool", kind, &carpool_sheet(sheet, &a.repo.data, now)));
     }
     if let Some(ed) = &a.ui.editor {
         out.push_str(&overlay("ov-editor", kind, &editor(ed, &a.repo.data, now)));
@@ -307,4 +310,163 @@ fn confirm(c: Confirm, a: &App) -> String {
             dialog("Add ScheduleZero to your Home Screen", &steps, None)
         }
     }
+}
+
+// ---- carpool ------------------------------------------------------------------------------------
+
+fn names(people: &[Person]) -> String {
+    let n: Vec<&str> = people.iter().map(|p| p.name()).collect();
+    match n.len() {
+        0 => String::new(),
+        1 => n[0].to_string(),
+        _ => format!("{} and {}", n[..n.len() - 1].join(", "), n[n.len() - 1]),
+    }
+}
+
+fn carpool_card(c: &Carpool, me: Person, busy: bool) -> String {
+    let sender = c.sender();
+    let to = c.recipients();
+    let mine = sender == Some(me);
+    let headline = match (mine, c.is_request()) {
+        (true, true) => format!("You asked {} for a ride", names(&to)),
+        (true, false) => format!("You offered {} a ride", names(&to)),
+        (false, true) => format!("{} asked for a ride", sender.map(|p| p.name()).unwrap_or("Someone")),
+        (false, false) => format!("{} offered you a ride", sender.map(|p| p.name()).unwrap_or("Someone")),
+    };
+    let mut chips = String::new();
+    for p in &to {
+        let (text, cls) = match c.answer(*p) {
+            Some("yes") => ("confirmed", " yes"),
+            Some("no") => ("denied", " no"),
+            _ => ("waiting", ""),
+        };
+        let who = if *p == me { "You".to_string() } else { p.name().to_string() };
+        let _ = write!(chips, r#"<span class="status{cls}">{}{} · {text}</span>"#, dot(*p, 8), esc(&who));
+    }
+    let note = if c.note.is_empty() { String::new() } else { format!(r#"<div class="t-body mt6">“{}”</div>"#, esc(&c.note)) };
+    let mut actions = String::new();
+    if c.cancelled > 0 {
+        actions.push_str(r#"<span class="t-small dim">Cancelled</span>"#);
+    } else if mine {
+        actions.push_str(&btn_disabled("text", "Cancel carpool", "cp-cancel", &c.id, busy));
+    } else if to.contains(&me) {
+        match c.answer(me) {
+            None => {
+                actions.push_str(&btn_disabled("outlined", "Deny", "cp-no", &c.id, busy));
+                actions.push_str(&btn_disabled("filled", "Confirm", "cp-yes", &c.id, busy));
+            }
+            Some("yes") => actions.push_str(&btn_disabled("text", "Change to deny", "cp-no", &c.id, busy)),
+            Some(_) => actions.push_str(&btn_disabled("text", "Change to confirm", "cp-yes", &c.id, busy)),
+        }
+    }
+    format!(
+        r#"<div class="card inner cp-card{}" data-key="cp-{}"><div class="t-title">{}</div>{note}<div class="statuses mt8">{chips}</div><div class="row center gap8 mt10 wrap"><span class="grow"></span>{actions}</div></div>"#,
+        if c.cancelled > 0 { " cancelled" } else { "" },
+        esc(&c.id),
+        esc(&headline)
+    )
+}
+
+fn carpool_dir(sheet: &CarpoolSheet, data: &AppData, dir: Dir) -> String {
+    let d = sheet.date;
+    let use24 = data.settings.use24h;
+    let Some(me) = data.me else { return String::new() };
+    let pick = |plan: Option<DayPlan>| plan.and_then(DayPlan::work).map(|(s, e)| if dir == Dir::To { s } else { e });
+    let verb = if dir == Dir::To { "start" } else { "finish" };
+    let my_time = pick(data.plan(d));
+    let matches = data.carpool_matches(d, dir);
+    let mut out = format!(
+        r#"<div class="cp-dir{}" data-key="cpd-{}"><div class="row center gap8">{}<span class="t-title-l grow">{}</span>{}</div>"#,
+        if matches.is_empty() { "" } else { " match" },
+        dir.id(),
+        icon("car"),
+        dir.title(),
+        if matches.is_empty() { String::new() } else { r#"<span class="pill-tag">Good match</span>"#.to_string() }
+    );
+    let _ = write!(
+        out,
+        r#"<div class="t-small dim mt4">{}</div><div class="who mt8">"#,
+        match my_time {
+            Some(m) => format!("You {verb} at {}", fmt::work_minutes(m, use24)),
+            None => "You're not working this day".to_string(),
+        }
+    );
+    for p in Person::ALL.into_iter().filter(|p| *p != me) {
+        let theirs = pick(data.plan_for(p, d));
+        let (text, close) = match (theirs, my_time) {
+            (Some(t), Some(m)) => {
+                let diff = (t - m).abs();
+                let rel = if diff == 0 { "same time".to_string() } else { format!("{} apart", fmt::duration(diff as i64)) };
+                (format!("{verb}s {} · {rel}", fmt::work_minutes(t, use24)), matches.contains(&p))
+            }
+            (Some(t), None) => (format!("{verb}s {}", fmt::work_minutes(t, use24)), false),
+            (None, _) => ("not working".to_string(), false),
+        };
+        let _ = write!(
+            out,
+            r#"<div class="who-row{}">{}<span class="grow">{}</span><span class="t-small">{}</span></div>"#,
+            if close { " close" } else { "" },
+            dot(p, 10),
+            p.name(),
+            esc(&text)
+        );
+    }
+    out.push_str("</div>");
+    for c in data.carpools_for(d, dir) {
+        out.push_str(&carpool_card(c, me, sheet.busy));
+    }
+    match &sheet.compose {
+        Some(c) if c.dir == dir => {
+            let title = if c.kind == "request" { format!("Ask for a ride {}", dir.words()) } else { format!("Offer a ride {}", dir.words()) };
+            let _ = write!(
+                out,
+                r#"<div class="card inner compose mt10"><div class="t-title">{}</div><div class="t-small dim mt4">Send to:</div><div class="chips wrap mt6">"#,
+                esc(&title)
+            );
+            for p in Person::ALL.into_iter().filter(|p| *p != me) {
+                let on = c.to.contains(&p);
+                let _ = write!(
+                    out,
+                    r#"<button class="chip{}" data-act="cp-to" data-arg="{}">{}{}</button>"#,
+                    if on { " on" } else { "" },
+                    p.id(),
+                    dot(p, 10),
+                    p.name()
+                );
+            }
+            let _ = write!(
+                out,
+                r#"</div><label class="field mt10"><span class="field-label">Note (optional)</span><span class="field-box"><input type="text" id="cp-note" maxlength="140" autocomplete="off" data-input="cp-note" data-enter="cp-send" value="{}" placeholder="e.g. I can leave 10 min early"></span></label><div class="row center gap8 mt10"><span class="grow"></span>{}{}</div></div>"#,
+                esc(&c.note),
+                btn("text", "Cancel", "cp-compose-cancel", ""),
+                btn_disabled("filled", if sheet.busy { "Sending…" } else { "Send" }, "cp-send", "", sheet.busy || c.to.is_empty())
+            );
+        }
+        _ => {
+            let _ = write!(
+                out,
+                r#"<div class="row gap8 wrap mt10">{}{}</div>"#,
+                btn_disabled("tonal", "Ask for a ride", "cp-compose", &format!("{}:request", dir.id()), sheet.busy),
+                btn_disabled("tonal", "Offer a ride", "cp-compose", &format!("{}:offer", dir.id()), sheet.busy)
+            );
+        }
+    }
+    out.push_str("</div>");
+    out
+}
+
+fn carpool_sheet(sheet: &CarpoolSheet, data: &AppData, _now: LocalTime) -> String {
+    let d = sheet.date;
+    let mut out = day_header(d, "cp-nav", &format!("{} · carpool", fmt::month_day(d)));
+    if let Some(e) = &sheet.error {
+        let _ = write!(out, r#"<div class="t-body error mt12 center-text">{}</div>"#, esc(e));
+    }
+    out.push_str(&carpool_dir(sheet, data, Dir::To));
+    out.push_str(&carpool_dir(sheet, data, Dir::From));
+    let _ = write!(
+        out,
+        r#"<p class="t-small dim center-text mt16">To work and home are separate: carpooling one way doesn't mean the other. People get a notification and confirm or deny in the app.</p><div class="row mt8"><span class="grow"></span>{}</div>"#,
+        btn("text", "Done", "close-overlay", "")
+    );
+    out
 }

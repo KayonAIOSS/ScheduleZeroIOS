@@ -24,6 +24,8 @@ pub struct Repo {
     pub data: AppData,
     updated_at: BTreeMap<i32, i64>,
     dirty: BTreeSet<i32>,
+    /// Messages marked read here that the server hasn't confirmed yet (offline).
+    pending_read: BTreeSet<String>,
 }
 
 impl Repo {
@@ -129,16 +131,70 @@ impl Repo {
             self.data.reminder_overrides.clear();
             self.data.others = Default::default();
         }
+        self.data.inbox.clear();
+        self.pending_read.clear();
         self.data.me = Some(p);
     }
 
     pub fn sign_out(&mut self) {
         self.updated_at.clear();
         self.dirty.clear();
+        self.pending_read.clear();
         self.data.me = None;
         self.data.plans.clear();
         self.data.reminder_overrides.clear();
         self.data.others = Default::default();
+        self.data.inbox.clear();
+        self.data.carpools.clear();
+    }
+
+    // ---- carpools & inbox -------------------------------------------------------------------
+
+    /// The server's carpools and my inbox. Messages read here but not yet confirmed stay read.
+    pub fn apply_server_extras(&mut self, carpools: Option<Vec<crate::model::Carpool>>, inbox: Option<Vec<crate::model::InboxMessage>>) {
+        if let Some(c) = carpools {
+            self.data.carpools = c;
+        }
+        if let Some(mut msgs) = inbox {
+            for m in msgs.iter_mut() {
+                if m.read != 0 {
+                    self.pending_read.remove(&m.id);
+                } else if self.pending_read.contains(&m.id) {
+                    m.read = 1;
+                }
+            }
+            msgs.sort_by(|a, b| b.created.cmp(&a.created));
+            self.data.inbox = msgs;
+        }
+    }
+
+    /// Adds or replaces one carpool (from an action's response) so the screen updates at once.
+    pub fn upsert_carpool(&mut self, c: crate::model::Carpool) {
+        match self.data.carpools.iter_mut().find(|x| x.id == c.id) {
+            Some(x) => *x = c,
+            None => self.data.carpools.push(c),
+        }
+    }
+
+    /// Marks messages read here right away; `pending_read()` lists them until the server has them.
+    /// `None` = all.
+    pub fn mark_read_local(&mut self, ids: Option<&[String]>, now_ms: i64) {
+        for m in self.data.inbox.iter_mut() {
+            if m.read == 0 && ids.map_or(true, |ids| ids.contains(&m.id)) {
+                m.read = now_ms;
+                self.pending_read.insert(m.id.clone());
+            }
+        }
+    }
+
+    pub fn pending_read(&self) -> Vec<String> {
+        self.pending_read.iter().cloned().collect()
+    }
+
+    pub fn read_uploaded(&mut self, ids: &[String]) {
+        for id in ids {
+            self.pending_read.remove(id);
+        }
     }
 
     // ---- sync hooks -------------------------------------------------------------------------
@@ -293,6 +349,27 @@ mod tests {
         phone.apply_server(&people);
         assert_eq!(phone.data.plan(d), Some(DayPlan::Off));
         assert!(phone.has_pending_uploads());
+    }
+
+    #[test]
+    fn read_marks_survive_until_the_server_has_them() {
+        use crate::model::InboxMessage;
+        let mut r = Repo::default();
+        r.set_me(Person::Kayo, 0);
+        let msg = |id: &str, read: i64| InboxMessage { id: id.into(), created: 5, read, ..Default::default() };
+        r.apply_server_extras(None, Some(vec![msg("a", 0), msg("b", 0)]));
+        assert_eq!(r.data.unread_count(), 2);
+        r.mark_read_local(Some(&["a".to_string()]), 9);
+        assert_eq!(r.data.unread_count(), 1);
+        // Server hasn't heard yet (offline): its copy still says unread, ours stays read.
+        r.apply_server_extras(None, Some(vec![msg("a", 0), msg("b", 0)]));
+        assert_eq!(r.data.unread_count(), 1);
+        assert_eq!(r.pending_read(), vec!["a".to_string()]);
+        // Server confirms.
+        r.apply_server_extras(None, Some(vec![msg("a", 10), msg("b", 0)]));
+        assert!(r.pending_read().is_empty());
+        r.mark_read_local(None, 11);
+        assert_eq!(r.data.unread_count(), 0);
     }
 
     #[test]

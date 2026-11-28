@@ -2,7 +2,8 @@
 
 use crate::app::{self, commit, commit_schedule, with, with_mut, Confirm, EditMode, Pick, Route};
 use crate::browser::{self, window};
-use crate::model::{work_time, Person, LEAD_MAX, LEAD_MIN, LEAD_STEP};
+use crate::carpool;
+use crate::model::{work_time, Dir, Person, CARPOOL_WINDOWS, LEAD_MAX, LEAD_MIN, LEAD_STEP};
 use crate::sync::{self, PasswordResult};
 use crate::time::Day;
 use wasm_bindgen::JsValue;
@@ -15,6 +16,8 @@ fn day(arg: &str) -> Option<Day> {
 fn parse_route(arg: &str) -> Route {
     if arg == "settings" {
         Route::Settings
+    } else if arg == "inbox" {
+        Route::Inbox
     } else if let Some(w) = arg.strip_prefix("week:").and_then(day) {
         Route::Week(w.week_start())
     } else {
@@ -61,10 +64,11 @@ fn go_back() {
 pub fn history_back() {
     let closed_overlay = with_mut(|a| {
         a.ui.menu_open = false;
-        if a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some() {
+        if a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some() || a.ui.carpool.is_some() {
             a.ui.editor = None;
             a.ui.comparing = None;
             a.ui.confirm = None;
+            a.ui.carpool = None;
             true
         } else {
             if a.ui.stack.len() > 1 {
@@ -94,9 +98,14 @@ fn close_overlay() {
             a.ui.confirm = None;
         } else if a.ui.menu_open {
             a.ui.menu_open = false;
+        } else if a.ui.carpool.as_ref().is_some_and(|s| s.compose.is_some()) {
+            if let Some(s) = a.ui.carpool.as_mut() {
+                s.compose = None;
+            }
         } else {
             a.ui.editor = None;
             a.ui.comparing = None;
+            a.ui.carpool = None;
         }
     });
 }
@@ -312,6 +321,56 @@ pub fn click(act: &str, arg: &str) {
         "pw-submit" => submit_password(),
         "pw-skip" => sync::skip_password(),
         "pw-switch" => sync::sign_out(),
+
+        // ---- carpools ----
+        "carpool" => {
+            if let Some(d) = day(arg) {
+                carpool::open(d);
+            }
+        }
+        "cp-nav" => {
+            if let Some(d) = day(arg) {
+                carpool::navigate(d);
+            }
+        }
+        "cp-compose" => {
+            // arg "to:request", "from:offer", ...
+            let mut it = arg.split(':');
+            if let (Some(dir), Some(kind)) = (it.next().and_then(Dir::parse), it.next()) {
+                carpool::compose(dir, if kind == "offer" { "offer" } else { "request" });
+            }
+        }
+        "cp-to" => {
+            if let Some(p) = Person::from_id(arg) {
+                carpool::toggle_recipient(p);
+            }
+        }
+        "cp-send" => carpool::send(),
+        "cp-compose-cancel" => carpool::cancel_compose(),
+        "cp-yes" => carpool::answer(arg, true),
+        "cp-no" => carpool::answer(arg, false),
+        "cp-cancel" => carpool::cancel(arg),
+        "cp-dismiss" => carpool::dismiss_suggestion(arg),
+
+        // ---- inbox ----
+        "inbox-read" => carpool::mark_read(Some(vec![arg.to_string()])),
+        "inbox-all" => carpool::mark_read(None),
+        "inbox-open" => carpool::open_message(arg),
+
+        // ---- carpool & server settings ----
+        "s-cp-notif" => setting(|s| s.carpool_notifications = !s.carpool_notifications),
+        "s-cp-suggest" => setting(|s| s.suggest_carpools = !s.suggest_carpools),
+        "s-cp-rem" => setting(|s| s.carpool_in_reminders = !s.carpool_in_reminders),
+        "cpwin-dec" | "cpwin-inc" => setting(|s| {
+            let i = CARPOOL_WINDOWS.iter().position(|w| *w == s.carpool_window).unwrap_or(0);
+            let j = if act == "cpwin-inc" { (i + 1).min(CARPOOL_WINDOWS.len() - 1) } else { i.saturating_sub(1) };
+            s.carpool_window = CARPOOL_WINDOWS[j];
+        }),
+        "backup-save" => {
+            let text = with(|a| a.ui.backup_text.clone());
+            sync::set_secondary(&text);
+        }
+        "backup-clear" => sync::set_secondary(""),
         _ => {}
     }
 }
@@ -384,6 +443,8 @@ pub fn input(name: &str, value: &str) -> bool {
                 }
             }
         }
+        "cp-note" => carpool::set_note(value),
+        "backup" => with_mut(|a| a.ui.backup_text = value.to_string()),
         "rate" => {
             let clean: String = value.chars().filter(|c| c.is_ascii_digit() || *c == '.').take(8).collect();
             let rate = clean.parse::<f64>().ok().filter(|v| *v > 0.0);

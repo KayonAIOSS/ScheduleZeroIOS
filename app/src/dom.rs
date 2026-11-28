@@ -46,7 +46,7 @@ pub fn render() {
 }
 
 fn after_render() {
-    let (dark, overlay) = with(|a| (a.repo.data.settings.dark_mode, a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some()));
+    let (dark, overlay) = with(|a| (a.repo.data.settings.dark_mode, a.ui.editor.is_some() || a.ui.comparing.is_some() || a.ui.confirm.is_some() || a.ui.carpool.is_some()));
     let theme = if dark { "dark" } else { "light" }.to_string();
     let changed = LAST_THEME.with(|t| *t.borrow() != theme);
     if let Some(html) = document().document_element() {
@@ -65,6 +65,18 @@ fn after_render() {
         let opts = web_sys::ScrollIntoViewOptions::new();
         opts.set_block(web_sys::ScrollLogicalPosition::Center);
         sel.scroll_into_view_with_scroll_into_view_options(&opts);
+    }
+}
+
+/// "#inbox" in the address (from a notification tap) opens the inbox.
+pub fn open_from_hash() {
+    let hash = window().location().hash().unwrap_or_default();
+    if hash == "#inbox" {
+        let desktop = is_desktop();
+        crate::actions::click(if desktop { "side" } else { "nav" }, "inbox");
+        if let Ok(h) = window().history() {
+            let _ = h.replace_state_with_url(&JsValue::NULL, "", Some("#"));
+        }
     }
 }
 
@@ -222,6 +234,11 @@ pub fn install_listeners() {
         }
     });
     listen(&win, "online", |_| crate::sync::wake_up());
+    // A tapped notification asks the open page to show the inbox (see glue.js / sw.js).
+    listen(&win, "hashchange", |_| {
+        open_from_hash();
+        request_render();
+    });
     listen(&doc, "visibilitychange", |_| {
         if document().visibility_state() == web_sys::VisibilityState::Visible {
             crate::sync::start();

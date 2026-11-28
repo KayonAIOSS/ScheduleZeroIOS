@@ -55,7 +55,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 PEOPLE = {
     "samy": {"name": "Samy", "color": "#E53935"},
@@ -70,6 +70,10 @@ PBKDF2_ITERATIONS = 200_000
 MIN_PASSWORD_LEN = 4
 MAX_BODY = 256 * 1024
 FUTURE_SLACK_MS = 2 * 60 * 1000  # device edit times further ahead than this are clamped to now
+MESSAGE_KEEP_DAYS = 60
+INBOX_LIMIT = 100
+DIR_WORDS = {"to": "to work", "from": "home from work"}
+BASE_PATH = ""  # e.g. "/ScheduleZero"; set from SZ_BASE_PATH in main()
 WORK_MIN, WORK_MAX = 12 * 60, 26 * 60   # noon .. 2 AM next day, in work-day minutes
 
 
@@ -113,7 +117,11 @@ class Store:
         raw = read_json(self.sched_path, {})
         self.rev = int(raw.get("rev", 0))
         self.people = {p: dict(raw.get("people", {}).get(p, {})) for p in PEOPLE}
+        self.carpools = dict(raw.get("carpools", {}))
+        self.messages = dict(raw.get("messages", {}))
         self.devices = read_json(self.dev_path, {})
+        # Called with each new inbox message (from this server or a peer), outside the lock.
+        self.on_new_message = None
         self._prune()
 
     # ---------- schedules ----------
@@ -123,18 +131,39 @@ class Store:
         for days in self.people.values():
             for d in [d for d in days if d < cutoff]:
                 del days[d]
+        for cid in [c for c, rec in self.carpools.items() if str(rec.get("day", "")) < cutoff]:
+            del self.carpools[cid]
+        old = now_ms() - MESSAGE_KEEP_DAYS * 86_400_000
+        for mid in [m for m, msg in self.messages.items() if int(msg.get("created", 0)) < old]:
+            del self.messages[mid]
 
     def _save_schedules(self) -> None:
-        atomic_write_json(self.sched_path, {"rev": self.rev, "people": self.people})
+        atomic_write_json(self.sched_path, {"rev": self.rev, "people": self.people,
+                                            "carpools": self.carpools, "messages": self.messages})
 
-    def snapshot(self) -> dict:
-        return {
+    def _changed(self) -> None:
+        """Call with the lock held after any change: new revision, save, wake long-polls."""
+        self.rev += 1
+        self._prune()
+        self._save_schedules()
+        self.cond.notify_all()
+
+    def snapshot(self, person: str = None) -> dict:
+        """Full state. For a device (`person` set): its own inbox. For a peer server: everything."""
+        out = {
             "rev": self.rev,
             "serverTime": now_ms(),
             "people": {p: dict(days) for p, days in self.people.items()},
+            "carpools": sorted(self.carpools.values(), key=lambda c: (c.get("day", ""), c.get("created", 0))),
         }
+        if person is None:
+            out["messages"] = list(self.messages.values())
+        else:
+            mine = [m for m in self.messages.values() if m.get("to") == person]
+            out["inbox"] = sorted(mine, key=lambda m: -int(m.get("created", 0)))[:INBOX_LIMIT]
+        return out
 
-    def wait_for_change(self, since: int, wait: float) -> dict:
+    def wait_for_change(self, since: int, wait: float, person: str = None) -> dict:
         deadline = time.monotonic() + wait
         with self.cond:
             while self.rev <= since:
@@ -142,7 +171,7 @@ class Store:
                 if remaining <= 0:
                     return {"rev": self.rev, "serverTime": now_ms(), "unchanged": True}
                 self.cond.wait(remaining)
-            return self.snapshot()
+            return self.snapshot(person)
 
     def merge_days(self, person: str, incoming: dict, from_device: bool = False) -> int:
         """Last-write-wins per day, using each entry's `updated` timestamp (when the edit was made).
@@ -166,20 +195,171 @@ class Store:
                     days[day] = clean
                     applied += 1
             if applied:
-                self.rev += 1
-                self._prune()
-                self._save_schedules()
-                self.cond.notify_all()
+                self._changed()
         return applied
 
-    def merge_all(self, people: dict) -> int:
+    def merge_all(self, people: dict, carpools=None, messages=None) -> int:
+        """Peer sync: schedules, carpools and inbox messages from another server."""
         total = 0
-        if not isinstance(people, dict):
+        if isinstance(people, dict):
+            for person, days in people.items():
+                if person in PEOPLE and isinstance(days, dict):
+                    total += self.merge_days(person, days)
+        new_msgs = []
+        with self.cond:
+            changed = 0
+            for rec in carpools if isinstance(carpools, list) else []:
+                changed += self._merge_carpool(rec)
+            for msg in messages if isinstance(messages, list) else []:
+                n, is_new = self._merge_message(msg)
+                changed += n
+                if is_new:
+                    new_msgs.append(msg)
+            if changed:
+                self._changed()
+        self._announce(new_msgs)
+        return total + changed
+
+    # ---------- carpools & inbox ----------
+    #
+    # A carpool is a request ("can someone drive me?") or an offer ("I can drive you") for one day
+    # and one direction: "to" work or "from" work. The two directions are independent. Each person
+    # it was sent to answers yes/no in the app; every new carpool, answer and cancellation becomes
+    # an inbox message for the people involved (and a notification on their devices).
+    # Merging (between servers) is per field, newest wins, so nothing is lost if two servers saw
+    # different answers.
+
+    def _merge_carpool(self, rec) -> int:
+        if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
             return 0
-        for person, days in people.items():
-            if person in PEOPLE and isinstance(days, dict):
-                total += self.merge_days(person, days)
-        return total
+        cur = self.carpools.get(rec["id"])
+        if cur is None:
+            clean = clean_carpool(rec)
+            if clean is None:
+                return 0
+            self.carpools[clean["id"]] = clean
+            return 1
+        changed = 0
+        if int(rec.get("cancelled", 0) or 0) > int(cur.get("cancelled", 0) or 0):
+            cur["cancelled"] = int(rec["cancelled"])
+            changed = 1
+        for who, ans in (rec.get("responses") or {}).items():
+            if who in PEOPLE and isinstance(ans, dict) and ans.get("answer") in ("yes", "no"):
+                old = cur.setdefault("responses", {}).get(who)
+                if old is None or int(ans.get("at", 0)) > int(old.get("at", 0)):
+                    cur["responses"][who] = {"answer": ans["answer"], "at": int(ans.get("at", 0))}
+                    changed = 1
+        if changed:
+            cur["updated"] = max(int(cur.get("updated", 0)), int(rec.get("updated", 0)))
+        return changed
+
+    def _merge_message(self, msg):
+        """Returns (changed, is_new)."""
+        if not isinstance(msg, dict) or not isinstance(msg.get("id"), str) or msg.get("to") not in PEOPLE:
+            return 0, False
+        cur = self.messages.get(msg["id"])
+        if cur is None:
+            keep = {k: msg.get(k) for k in ("id", "to", "from", "kind", "carpool", "title", "body", "created", "read")}
+            keep["read"] = int(keep.get("read") or 0)
+            self.messages[msg["id"]] = keep
+            return 1, True
+        if int(msg.get("read") or 0) > int(cur.get("read") or 0):
+            cur["read"] = int(msg["read"])
+            return 1, False
+        return 0, False
+
+    def _announce(self, msgs) -> None:
+        """Hands fresh, unread messages to the notifier (web push). Old history from a first peer
+        sync is not announced."""
+        if not self.on_new_message:
+            return
+        recent = now_ms() - 15 * 60 * 1000
+        for m in msgs:
+            if not m.get("read") and int(m.get("created", 0)) > recent:
+                try:
+                    self.on_new_message(m)
+                except Exception:
+                    pass
+
+    def _message(self, to: str, sender: str, kind: str, carpool: dict, title: str, body: str) -> dict:
+        msg = {"id": "m" + secrets.token_hex(8), "to": to, "from": sender, "kind": kind,
+               "carpool": carpool["id"], "title": title, "body": body, "created": now_ms(), "read": 0}
+        self.messages[msg["id"]] = msg
+        return msg
+
+    def _times(self, person: str, day: str, direction: str) -> str:
+        e = self.people.get(person, {}).get(day)
+        if not e or e.get("type") != "work":
+            return ""
+        return (" · starts " + clock12(e["start"])) if direction == "to" else (" · ends " + clock12(e["end"]))
+
+    def carpool_create(self, person: str, kind: str, day: str, direction: str, to, note: str = "") -> dict:
+        rec = clean_carpool({"id": "c" + secrets.token_hex(8), "from": person, "kind": kind, "day": day,
+                             "dir": direction, "to": to, "note": note, "created": now_ms()})
+        if rec is None or person in rec["to"] or not rec["to"]:
+            raise ValueError("bad carpool")
+        msgs = []
+        with self.cond:
+            self.carpools[rec["id"]] = rec
+            where = DIR_WORDS[direction]
+            title = (f"{name(person)} asks for a ride {where}" if kind == "request"
+                     else f"{name(person)} can drive you {where}")
+            body = nice_day(day) + self._times(person, day, direction)
+            if rec["note"]:
+                body += f" · “{rec['note']}”"
+            body += ". Open ScheduleZero to answer."
+            for p in rec["to"]:
+                msgs.append(self._message(p, person, "carpool-new", rec, title, body))
+            self._changed()
+        self._announce(msgs)
+        return rec
+
+    def carpool_respond(self, person: str, cid: str, answer: str) -> dict:
+        msgs = []
+        with self.cond:
+            rec = self.carpools.get(cid)
+            if rec is None or person not in rec.get("to", []) or rec.get("cancelled") or answer not in ("yes", "no"):
+                raise ValueError("can't answer this carpool")
+            rec.setdefault("responses", {})[person] = {"answer": answer, "at": now_ms()}
+            rec["updated"] = now_ms()
+            where = DIR_WORDS[rec["dir"]]
+            if rec["kind"] == "request":
+                title = (f"{name(person)} will drive you {where}" if answer == "yes"
+                         else f"{name(person)} can't drive you {where}")
+            else:
+                title = (f"{name(person)} is riding with you {where}" if answer == "yes"
+                         else f"{name(person)} doesn't need your ride {where}")
+            msgs.append(self._message(rec["from"], person, "carpool-answer", rec, title, nice_day(rec["day"]) + "."))
+            self._changed()
+        self._announce(msgs)
+        return rec
+
+    def carpool_cancel(self, person: str, cid: str) -> dict:
+        msgs = []
+        with self.cond:
+            rec = self.carpools.get(cid)
+            if rec is None or rec.get("from") != person:
+                raise ValueError("only the sender can cancel")
+            if not rec.get("cancelled"):
+                rec["cancelled"] = rec["updated"] = now_ms()
+                title = f"{name(person)} cancelled the carpool {DIR_WORDS[rec['dir']]}"
+                for p in rec["to"]:
+                    msgs.append(self._message(p, person, "carpool-cancel", rec, title, nice_day(rec["day"]) + "."))
+                self._changed()
+        self._announce(msgs)
+        return rec
+
+    def mark_read(self, person: str, ids=None) -> int:
+        """Marks this person's messages read (all of them when `ids` is None)."""
+        n = 0
+        with self.cond:
+            for m in self.messages.values():
+                if m.get("to") == person and not m.get("read") and (ids is None or m["id"] in ids):
+                    m["read"] = now_ms()
+                    n += 1
+            if n:
+                self._changed()
+        return n
 
     # ---------- devices ----------
 
@@ -286,6 +466,48 @@ def validate_entry(day: str, entry):
     if kind in ("off", "none"):
         return {"type": kind, "updated": updated}
     return None
+
+
+def name(person: str) -> str:
+    return PEOPLE.get(person, {}).get("name", person)
+
+
+def clock12(minutes: int) -> str:
+    h, m = (minutes // 60) % 24, minutes % 60
+    return f"{12 if h % 12 == 0 else h % 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def nice_day(day: str) -> str:
+    """"2026-11-30" -> "Mon, Nov 30"."""
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        return day
+    return f"{d:%a}, {d:%b} {d.day}"
+
+
+def clean_carpool(rec: dict):
+    try:
+        day = date.fromisoformat(str(rec.get("day")))
+    except ValueError:
+        return None
+    if day > date.today() + timedelta(days=MAX_FUTURE_DAYS):
+        return None
+    if rec.get("from") not in PEOPLE or rec.get("kind") not in ("request", "offer") or rec.get("dir") not in ("to", "from"):
+        return None
+    to = rec.get("to")
+    to = sorted({p for p in to if p in PEOPLE}) if isinstance(to, list) else []
+    responses = {}
+    for who, ans in (rec.get("responses") or {}).items():
+        if who in to and isinstance(ans, dict) and ans.get("answer") in ("yes", "no"):
+            responses[who] = {"answer": ans["answer"], "at": int(ans.get("at", 0) or 0)}
+    created = int(rec.get("created", 0) or 0)
+    return {
+        "id": str(rec.get("id"))[:40], "from": rec["from"], "kind": rec["kind"], "day": day.isoformat(),
+        "dir": rec["dir"], "to": to, "note": str(rec.get("note") or "")[:140].strip(),
+        "created": created, "cancelled": int(rec.get("cancelled", 0) or 0), "responses": responses,
+        "updated": int(rec.get("updated", 0) or created),
+    }
 
 
 # ---------------------------------------------------------------------------------------------
@@ -438,6 +660,31 @@ class PushStore:
             self._save()
             return len(clean)
 
+    def notify_message(self, msg: dict) -> None:
+        """A new inbox message: push it to every browser of the person it's for (unless that
+        browser turned carpool notifications off)."""
+        with self.lock:
+            for d in self.devices.values():
+                if d.get("person") == msg.get("to") and d.get("endpoint") and d.get("messages", True):
+                    d.setdefault("items", []).append({
+                        "id": "msg-" + msg["id"], "at": now_ms(), "until": 0, "title": msg.get("title", ""),
+                        "body": msg.get("body", ""), "check": {}, "snooze": False, "message": msg["id"]})
+            self._save()
+
+    def read_from_notification(self, device_id: str, key: str, msg_id: str) -> bool:
+        """The "Mark as read" button on a notification (the service worker has no login token)."""
+        with self.lock:
+            d = self._device_for_key(device_id, key)
+            person = d.get("person") if d else None
+        return bool(person) and self.store.mark_read(person, [msg_id]) >= 0
+
+    def set_messages_enabled(self, device_id: str, person: str, enabled: bool) -> None:
+        with self.lock:
+            d = self.devices.get(device_id)
+            if d and d.get("person") == person and d.get("messages", True) != enabled:
+                d["messages"] = enabled
+                self._save()
+
     def enqueue_now(self, device_id: str, person: str, title: str, body: str) -> bool:
         with self.lock:
             d = self.devices.get(device_id)
@@ -513,6 +760,8 @@ class PushStore:
                     msg = {k: item[k] for k in ("id", "title", "body")}
                     msg["tag"] = item["id"].split("~")[0]
                     msg["snoozable"] = item["id"].startswith("shift-")
+                    if item.get("message"):
+                        msg["message"] = item["message"]  # shows a "Mark as read" button
                     d["inbox"] = (d.get("inbox", []) + [msg])[-self.MAX_INBOX:]
                     d["sent"] = (d.get("sent", []) + [{**item, "id": item["id"]}])[-20:]
                     out.append((dev_id, d.get("endpoint")))
@@ -545,7 +794,7 @@ def push_loop(push: PushStore, contact: str, verbose: bool) -> None:
         except Exception as e:  # network trouble: try again next round
             if verbose:
                 sys.stderr.write("push loop: %s\n" % e)
-        time.sleep(10)
+        time.sleep(3)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -636,10 +885,49 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                self._cors()
                 self.end_headers()
                 self.wfile.write(body)
             except (ConnectionError, TimeoutError, OSError):
                 pass  # client went away; nothing to do
+
+        def _cors(self) -> None:
+            # The web app on the other server may use this one as its backup. Auth is a bearer
+            # token (never cookies), so allowing any origin is safe.
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+        def do_OPTIONS(self):
+            try:
+                self.send_response(204)
+                self._cors()
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers",
+                                 "Authorization, Content-Type, X-Device-Id, X-Device-Name, X-Platform")
+                self.send_header("Access-Control-Max-Age", "86400")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except (ConnectionError, TimeoutError, OSError):
+                pass
+
+        def _url(self):
+            """The request path without the web address prefix (e.g. /ScheduleZero), so the server
+            works whether or not the reverse proxy strips it. Returns None after redirecting
+            "/ScheduleZero" to "/ScheduleZero/"."""
+            url = urlparse(self.path)
+            if BASE_PATH:
+                low = url.path.lower()
+                if low == BASE_PATH.lower():
+                    try:
+                        self.send_response(301)
+                        self.send_header("Location", url.path + "/" + (("?" + url.query) if url.query else ""))
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                    except (ConnectionError, TimeoutError, OSError):
+                        pass
+                    return None
+                if low.startswith(BASE_PATH.lower() + "/"):
+                    url = url._replace(path=url.path[len(BASE_PATH):])
+            return url
 
         def _body(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
@@ -700,14 +988,18 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 pass
 
         def do_HEAD(self):
-            url = urlparse(self.path)
+            url = self._url()
+            if url is None:
+                return
             if url.path.startswith("/api/"):
                 return self._send(405, {"error": "use GET"})
             return self._static(url, head=True)
 
         # ---- routes ----
         def do_GET(self):
-            url = urlparse(self.path)
+            url = self._url()
+            if url is None:
+                return
             q = parse_qs(url.query)
             if not url.path.startswith("/api/"):
                 return self._static(url)
@@ -742,8 +1034,8 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                     wait = min(max(float((q.get("wait") or ["0"])[0]), 0), MAX_WAIT_SECONDS)
                 except ValueError:
                     since, wait = -1, 0
-                result = store.wait_for_change(since, wait) if wait > 0 else (
-                    store.snapshot() if store.rev > since else
+                result = store.wait_for_change(since, wait, person) if wait > 0 else (
+                    store.snapshot(person) if store.rev > since else
                     {"rev": store.rev, "serverTime": now_ms(), "unchanged": True})
                 result["you"] = person
                 return self._send(200, result)
@@ -760,7 +1052,9 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
-            url = urlparse(self.path)
+            url = self._url()
+            if url is None:
+                return
             body = self._body()
             if url.path in ("/api/auth/setup", "/api/auth/login"):
                 person = str(body.get("person", "")).lower()
@@ -787,8 +1081,34 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
             if url.path == "/api/peer/merge":
                 if not self._peer_ok():
                     return
-                applied = store.merge_all(body.get("people"))
+                applied = store.merge_all(body.get("people"), body.get("carpools"), body.get("messages"))
                 return self._send(200, {"applied": applied, "rev": store.rev})
+            if url.path == "/api/carpool":
+                person = self._auth()
+                if not person:
+                    return
+                self._device(person, body)
+                action = body.get("action")
+                try:
+                    if action == "create":
+                        rec = store.carpool_create(person, str(body.get("kind")), str(body.get("day")),
+                                                   str(body.get("dir")), body.get("to"), str(body.get("note") or ""))
+                    elif action == "respond":
+                        rec = store.carpool_respond(person, str(body.get("id")), str(body.get("answer")))
+                    elif action == "cancel":
+                        rec = store.carpool_cancel(person, str(body.get("id")))
+                    else:
+                        return self._send(400, {"error": "unknown action"})
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+                return self._send(200, {"carpool": rec, "rev": store.rev, "serverTime": now_ms()})
+            if url.path == "/api/inbox/read":
+                person = self._auth()
+                if not person:
+                    return
+                ids = body.get("ids")
+                n = store.mark_read(person, None if body.get("all") else [str(i) for i in (ids or [])])
+                return self._send(200, {"marked": n, "rev": store.rev})
             if url.path == "/api/schedule":
                 person = self._auth()
                 if not person:
@@ -810,6 +1130,9 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
             if path == "/api/push/snooze":  # from the service worker: inbox key instead of a token
                 ok = push.snooze(device, str(body.get("key", "")), str(body.get("id", "")))
                 return self._send(200 if ok else 404, {"ok": ok})
+            if path == "/api/push/read":  # "Mark as read" on a notification, from the service worker
+                ok = push.read_from_notification(device, str(body.get("key", "")), str(body.get("id", "")))
+                return self._send(200 if ok else 404, {"ok": ok})
             person = self._auth()
             if not person:
                 return
@@ -826,6 +1149,8 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 push.unsubscribe(device)
                 return self._send(200, {"ok": True})
             if path == "/api/push/schedule":
+                if "messages" in body:
+                    push.set_messages_enabled(device, person, bool(body.get("messages")))
                 n = push.set_items(device, person, body.get("items"))
                 if n < 0:
                     return self._send(404, {"error": "not subscribed"})
@@ -839,6 +1164,31 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
     return Handler
 
 
+def reset_passwords(store: Store, spec: str) -> None:
+    """SZ_RESET_PASSWORDS=kayo,samy resets those passwords once, for servers without a shell (TrueNAS):
+    set it, save, and it happens on start. It runs again only if the value changes, so it can stay set.
+    Add anything to repeat it, e.g. "kayo #2". Schedules are kept."""
+    spec = spec.strip()
+    marker = os.path.join(store.dir, "password-resets-done.txt")
+    try:
+        with open(marker, encoding="utf-8") as f:
+            if f.read().strip() == spec:
+                return
+    except FileNotFoundError:
+        pass
+    if not spec:
+        return
+    for p in {w.strip().lower().split(" ")[0] for w in spec.split(",")}:
+        if p in PEOPLE:
+            try:
+                os.remove(store._pw_path(p))
+                print(f"password reset: {p}", flush=True)
+            except FileNotFoundError:
+                pass
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(spec)
+
+
 def peer_sync_loop(store: Store, peers, key: str, interval: float, verbose: bool) -> None:
     """Pull every peer's schedules, merge them, then push ours. Failures are expected and silent."""
     while True:
@@ -847,8 +1197,9 @@ def peer_sync_loop(store: Store, peers, key: str, interval: float, verbose: bool
                 req = Request(base.rstrip("/") + "/api/peer/state", headers={"X-Peer-Key": key})
                 with urlopen(req, timeout=15) as r:
                     theirs = json.loads(r.read().decode("utf-8"))
-                store.merge_all(theirs.get("people"))
-                mine = json.dumps({"people": store.snapshot()["people"]}).encode("utf-8")
+                store.merge_all(theirs.get("people"), theirs.get("carpools"), theirs.get("messages"))
+                snap = store.snapshot()
+                mine = json.dumps({k: snap[k] for k in ("people", "carpools", "messages")}).encode("utf-8")
                 req = Request(base.rstrip("/") + "/api/peer/merge", data=mine, method="POST",
                               headers={"X-Peer-Key": key, "Content-Type": "application/json"})
                 with urlopen(req, timeout=15) as r:
@@ -869,10 +1220,17 @@ def main():
     ap.add_argument("--key", default=os.environ.get("SZ_KEY"), help="TLS private key (PEM)")
     ap.add_argument("--web", default=os.environ.get("SZ_WEB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")),
                     help="folder with the built web app (served at /). Missing folder = sync-only server")
+    ap.add_argument("--base", default=os.environ.get("SZ_BASE_PATH", ""),
+                    help="web address prefix, e.g. /ScheduleZero (works whether or not the proxy strips it)")
     args = ap.parse_args()
 
+    global BASE_PATH
+    BASE_PATH = ("/" + args.base.strip("/")) if args.base.strip("/") else ""
     store = Store(args.data)
+    reset_passwords(store, os.environ.get("SZ_RESET_PASSWORDS", ""))
     push = PushStore(store.dir, store) if os.environ.get("SZ_PUSH", "1") != "0" else None
+    if push:
+        store.on_new_message = push.notify_message
     static = StaticFiles(args.web) if os.path.isfile(os.path.join(args.web, "index.html")) else None
     server = QuietServer((args.host, args.port), make_handler(store, args.verbose, push, static))
     if push:

@@ -70,13 +70,18 @@ pub fn reminder_items(data: &AppData, now: LocalTime, to_ms: &dyn Fn(LocalTime) 
         if let (Some(at), Some((start, end)), true) = (data.reminder_time(d), data.work_plan(d), data.reminder_enabled(d)) {
             if at > now {
                 let leave = data.leave_time(d).unwrap_or(at);
+                let carpool = if data.settings.carpool_in_reminders {
+                    data.ride_summary(d, crate::model::Dir::To).map(|s| format!("\nCarpool: {s}")).unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 items.push(json!({
                     "id": format!("shift-{}", d.iso()),
                     "at": to_ms(at),
                     "until": to_ms(d.at(end)),
                     "title": format!("Work at {}", fmt::work_minutes(start, use24)),
                     "body": format!(
-                        "Leave by {} ({} min drive).\nShift: {} · {}",
+                        "Leave by {} ({} min drive).\nShift: {} · {}{carpool}",
                         fmt::time(leave, use24),
                         data.settings.commute_minutes,
                         fmt::shift(start, end, use24),
@@ -103,6 +108,22 @@ pub fn reminder_items(data: &AppData, now: LocalTime, to_ms: &dyn Fn(LocalTime) 
         }));
     }
     items
+}
+
+/// New inbox messages that arrived while the page is open. When this browser has notifications
+/// allowed but isn't registered for pushes from this site (e.g. using the backup server), show
+/// them straight from the page; otherwise the server's push already shows them.
+pub fn show_in_page(msgs: &[crate::model::InboxMessage]) {
+    if msgs.is_empty() {
+        return;
+    }
+    let (on, pushed) = with(|a| (a.repo.data.settings.carpool_notifications, a.push.key.is_some() && !a.status.using_backup()));
+    if !on || pushed || glue_string("szPermission") != "granted" {
+        return;
+    }
+    for m in msgs {
+        glue("szShowNotification", &[JsValue::from_str(&m.title), JsValue::from_str(&m.body), JsValue::from_str(&m.id)]);
+    }
 }
 
 /// Why reminders can't be delivered on this device right now (None = they can).
@@ -168,7 +189,7 @@ impl IntoPromise for JsValue {
 /// Sends this browser's push subscription to the server and uploads the reminders.
 async fn register(sub_json: &str) {
     let Ok(sub) = serde_json::from_str::<Value>(sub_json) else { return };
-    let (token, device) = with(|a| (a.saved.token.clone(), a.saved.device_id.clone()));
+    let (token, device) = with(|a| (a.saved.token(crate::sync::MAIN), a.saved.device_id.clone()));
     let Some(token) = token else { return };
     let body = json!({"deviceId": device, "subscription": sub});
     match api("POST", "/api/push/subscribe", Some(&token), Some(body), 15_000).await {
@@ -217,7 +238,7 @@ pub fn on_signed_in() {
 
 /// Signing out: stop reminders for this browser.
 pub fn forget() {
-    let (token, device) = with(|a| (a.saved.token.clone(), a.saved.device_id.clone()));
+    let (token, device) = with(|a| (a.saved.token(crate::sync::MAIN), a.saved.device_id.clone()));
     with_mut(|a| {
         a.push.key = None;
         a.push.last_sig.clear();
@@ -245,17 +266,18 @@ pub fn schedule_sync_soon() {
 }
 
 async fn sync_items() {
-    let (enabled, token, device) = with(|a| (a.push.key.is_some(), a.saved.token.clone(), a.saved.device_id.clone()));
+    let (enabled, token, device) = with(|a| (a.push.key.is_some(), a.saved.token(crate::sync::MAIN), a.saved.device_id.clone()));
     let Some(token) = token else { return };
     if !enabled {
         return;
     }
     let items = with(|a| reminder_items(&a.repo.data, browser::local_now(), &browser::local_to_ms));
-    let sig = serde_json::to_string(&items).unwrap_or_default();
+    let messages = with(|a| a.repo.data.settings.carpool_notifications);
+    let sig = format!("{messages}{}", serde_json::to_string(&items).unwrap_or_default());
     if with(|a| a.push.last_sig == sig) {
         return;
     }
-    match api("POST", "/api/push/schedule", Some(&token), Some(json!({"deviceId": device, "items": items})), 15_000).await {
+    match api("POST", "/api/push/schedule", Some(&token), Some(json!({"deviceId": device, "items": items, "messages": messages})), 15_000).await {
         Ok(_) => with_mut(|a| {
             a.push.last_sig = sig;
             a.push.save();
@@ -274,7 +296,7 @@ async fn sync_items() {
 
 pub fn send_test() {
     ensure_enabled_from_gesture();
-    let (token, device, enabled) = with(|a| (a.saved.token.clone(), a.saved.device_id.clone(), a.push.enabled()));
+    let (token, device, enabled) = with(|a| (a.saved.token(crate::sync::MAIN), a.saved.device_id.clone(), a.push.enabled()));
     let Some(token) = token else { return };
     if !enabled {
         return;

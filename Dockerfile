@@ -8,7 +8,8 @@ RUN rustup target add wasm32-unknown-unknown \
     | tar -xz -C /usr/local/bin
 WORKDIR /src
 COPY app/ .
-RUN trunk build --release
+# The app lives at https://pciememorycontroller.com/ScheduleZero/
+RUN trunk build --release --public-url /ScheduleZero/
 
 # 2. Run it: Python standard library only, same server as debian-server.
 FROM python:3.13-alpine
@@ -18,7 +19,7 @@ LABEL org.opencontainers.image.source="https://github.com/KayonAIOSS/ScheduleZer
 WORKDIR /app
 COPY server/schedulezero_server.py /app/
 COPY --from=web /src/dist /app/web
-ENV SZ_PORT=8787 SZ_DATA=/data SZ_WEB=/app/web PYTHONUNBUFFERED=1
+ENV SZ_PORT=8787 SZ_DATA=/data SZ_WEB=/app/web SZ_BASE_PATH=/ScheduleZero PYTHONUNBUFFERED=1
 VOLUME /data
 EXPOSE 8787
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s \

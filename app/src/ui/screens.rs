@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::app::App;
-use crate::model::{AppData, DayPlan, LEAD_MAX, LEAD_MIN, LEAD_STEP};
+use crate::model::{AppData, DayPlan, Dir, LEAD_MAX, LEAD_MIN, LEAD_STEP};
 use crate::sync::{Auth, Connection};
 use crate::time::{fmt, Day, LocalTime};
 use std::fmt::Write;
@@ -23,6 +23,15 @@ pub fn home(a: &App, now: LocalTime) -> String {
 
     let mut banners = String::new();
     banners.push_str(&install_banner(a));
+    banners.push_str(&carpool_suggestions(data, active, now));
+    let waiting = data.carpools_awaiting_me();
+    if waiting > 0 {
+        banners.push_str(&info_banner(
+            if waiting == 1 { "A carpool needs your answer" } else { "Carpools need your answer" },
+            "Someone asked for or offered a ride. Answer yes or no in the inbox.",
+            &btn("filled", "Open inbox", if a.ui.desktop { "side" } else { "nav" }, "inbox"),
+        ));
+    }
     if !data.has_any_entry(this_week) {
         let mut actions = btn("filled", "Enter week", "nav", &format!("week:{}", this_week.0));
         if data.has_any_entry(last_week) {
@@ -74,7 +83,8 @@ pub fn home(a: &App, now: LocalTime) -> String {
         sync_status(&a.status)
     );
     let actions = format!(
-        "{}{}",
+        "{}{}{}",
+        inbox_btn(data, "nav"),
         icon_btn("week", "Week schedule", "nav", &format!("week:{}", this_week.0), false),
         icon_btn("settings", "Settings", "nav", "settings", false)
     );
@@ -126,9 +136,19 @@ fn hero(data: &AppData, d: Day, now: LocalTime) -> String {
         }
         Some(DayPlan::Work { start, end }) => work_hero(data, d, start, end, now),
     };
+    let rides: Vec<String> = [Dir::To, Dir::From]
+        .iter()
+        .filter_map(|dir| data.ride_summary(d, *dir).map(|s| format!("{}: {s}", dir.title())))
+        .collect();
+    let ride_line = if rides.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="ride-line mt14">{}<span>{}</span></div>"#, icon("car"), esc(&rides.join(" · ")))
+    };
     format!(
-        r#"<div class="card hero"><div class="row center"><span class="t-label accent grow">{}</span>{}</div>{body}{}</div>"#,
+        r#"<div class="card hero"><div class="row center"><span class="t-label accent grow">{}</span>{}{}</div>{body}{ride_line}{}</div>"#,
         esc(&label),
+        car_btn(d, data),
         icon_btn("edit", "Edit today", "edit", &d.0.to_string(), false),
         also_working(data, d)
     )
@@ -366,7 +386,7 @@ fn day_tile(d: Day, data: &AppData, now: LocalTime, today: bool) -> String {
         _ => String::new(),
     };
     format!(
-        r#"<div class="card tile-day {}{}" role="button" tabindex="0" data-act="edit" data-arg="{}"><div class="row center"><span class="t-label grow">{} {}</span>{remind}</div>{body}<div class="grow"></div><div class="row">{}</div></div>"#,
+        r#"<div class="card tile-day {}{}" role="button" tabindex="0" data-act="edit" data-arg="{}"><div class="row center"><span class="t-label grow">{} {}</span>{remind}</div>{body}<div class="grow"></div><div class="row center"><span class="grow row">{}</span>{}</div></div>"#,
         match plan {
             Some(DayPlan::Work { .. }) => "work",
             Some(DayPlan::Off) => "off",
@@ -376,7 +396,8 @@ fn day_tile(d: Day, data: &AppData, now: LocalTime, today: bool) -> String {
         d.0,
         fmt::day_short(d).to_uppercase(),
         d.day_of_month(),
-        others_dots(d, data)
+        others_dots(d, data),
+        car_btn(d, data)
     )
 }
 
@@ -427,22 +448,42 @@ pub fn settings(a: &App, now: LocalTime) -> String {
         });
         let line = match (a.status.auth, a.status.connection) {
             (Auth::NeedsPassword { .. }, _) => "Not signed in. Tap Sign in.".to_string(),
-            (_, Connection::Online) => format!("Connected{}", ago.as_ref().map(|x| format!(" · synced {x}")).unwrap_or_default()),
+            (_, Connection::Online) => format!(
+                "Connected to {}{}",
+                if a.status.using_backup() { "backup server" } else { "main server" },
+                ago.as_ref().map(|x| format!(" · synced {x}")).unwrap_or_default()
+            ),
             (_, Connection::Connecting) => "Connecting…".into(),
             _ if a.status.pending => "Offline. Your changes will upload when connected.".into(),
             _ => format!("Offline{}", ago.as_ref().map(|x| format!(" · last synced {x}")).unwrap_or_default()),
         };
         let sign_in = matches!(a.status.auth, Auth::NeedsPassword { .. });
-        let host = crate::browser::window().location().host().unwrap_or_default();
+        let loc = crate::browser::window().location();
+        let main_url = format!("{}{}", loc.origin().unwrap_or_default(), crate::browser::glue_string("szBase"));
+        let typed = crate::sync::clean_server(&a.ui.backup_text);
+        let changed = typed != a.saved.secondary;
+        let https_page = main_url.starts_with("https://");
+        let warn = if https_page && typed.starts_with("http://") {
+            r#"<div class="t-small error">Browsers block http:// servers from an https page. Use an https:// address (or leave it empty).</div>"#
+        } else {
+            ""
+        };
         groups.push(group(
             "Account & sync",
             &format!(
-                r#"<div class="list-row">{}<div class="grow px14"><div class="t-title">{}</div><div class="t-small dim">{}</div></div>{}</div><div class="divider"></div><div class="list-row"><div class="t-small dim">This app syncs through <b>{}</b>, which keeps itself in sync with the other ScheduleZero server. The Android app can use either one.</div></div><div class="divider"></div>{}"#,
+                r#"<div class="list-row">{}<div class="grow px14"><div class="t-title">{}</div><div class="t-small dim">{}</div></div>{}</div><div class="divider"></div>
+<div class="list-col"><span class="field-label">Main server (this site)</span><div class="fixed-field">{}</div>
+<label class="field mt10"><span class="field-label">Backup server</span><span class="field-box"><input type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" id="backup" data-input="backup" data-enter="backup-save" value="{}" placeholder="https://… (optional)"></span></label>
+{warn}<div class="t-small dim">Used automatically when this site's server can't be reached. The two servers also keep each other in sync.</div>
+<div class="row center mt4"><span class="grow"></span>{}{}</div></div><div class="divider"></div>{}"#,
                 dot(me, 28),
                 me.name(),
                 esc(&line),
                 btn("tonal", if sign_in { "Sign in" } else { "Sync now" }, "sync-now", ""),
-                esc(&host),
+                esc(&main_url),
+                esc(&a.ui.backup_text),
+                if a.saved.secondary.is_empty() { String::new() } else { btn("text", "Remove", "backup-clear", "") },
+                btn_disabled("text", "Save", "backup-save", "", !changed),
                 action_row("Switch person", "Sign this device in as someone else.", "Switch", "switch-person")
             ),
         ));
@@ -535,6 +576,28 @@ pub fn settings(a: &App, now: LocalTime) -> String {
     }
     groups.push(group("Weekly check-in", &weekly));
 
+    let window_text = match s.carpool_window {
+        0 => "Same time".to_string(),
+        m => format!("Within {m} min"),
+    };
+    groups.push(group(
+        "Carpool",
+        &format!(
+            r#"{}<div class="divider"></div>{}<div class="divider"></div>{}<div class="divider"></div>{}"#,
+            toggle_row("Carpool notifications", "Requests, offers and answers. Yes/No is always answered in the app.", s.carpool_notifications, "s-cp-notif"),
+            toggle_row("Suggest carpools", "Ask \"carpool?\" when someone starts or ends work when you do.", s.suggest_carpools, "s-cp-suggest"),
+            stepper(
+                "Counts as the same time",
+                &window_text,
+                "cpwin-dec",
+                "cpwin-inc",
+                s.carpool_window > 0,
+                s.carpool_window < *crate::model::CARPOOL_WINDOWS.last().unwrap_or(&60)
+            ),
+            toggle_row("Carpool in shift reminders", "Shift reminders say who's driving.", s.carpool_in_reminders, "s-cp-rem")
+        ),
+    ));
+
     groups.push(group(
         "Commute & pay",
         &format!(
@@ -569,5 +632,95 @@ pub fn settings(a: &App, now: LocalTime) -> String {
     format!(
         r#"{}<div class="content">{all}{footer}</div>"#,
         top_bar(r#"<span class="t-title-l">Settings</span>"#, true, "")
+    )
+}
+
+// ---- Carpool suggestions & Inbox ----------------------------------------------------------------
+
+/// "Carpool Monday?" cards for the coming week, when someone starts or ends near you and nothing
+/// is set up yet. To work and home are separate suggestions.
+fn carpool_suggestions(data: &AppData, from: Day, now: LocalTime) -> String {
+    if !data.settings.suggest_carpools {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut shown = 0;
+    for i in 0..7 {
+        let d = from.plus(i);
+        for dir in [Dir::To, Dir::From] {
+            if shown >= 2 {
+                return out;
+            }
+            let key = format!("{}:{}", d.0, dir.id());
+            let people = data.carpool_matches(d, dir);
+            let Some((s, e)) = data.work_plan(d) else { continue };
+            let when = d.at(if dir == Dir::To { s } else { e });
+            if people.is_empty() || when <= now || data.has_active_carpool(d, dir) || data.dismissed_suggestions.contains(&key) {
+                continue;
+            }
+            let names: Vec<&str> = people.iter().map(|p| p.name()).collect();
+            let verb = if dir == Dir::To { "start" } else { "finish" };
+            let day_word = if d == now.day() { "today".to_string() } else { fmt::day_name(d).to_string() };
+            let body = format!(
+                "{} also {verb}{} around {} {}. Ask for a ride or offer one?",
+                names.join(" and "),
+                if people.len() == 1 { "s" } else { "" },
+                fmt::time(when, data.settings.use24h),
+                day_word
+            );
+            out.push_str(&format!(
+                r#"<div class="card banner suggest"><div class="row center gap8">{}<div class="t-title">Carpool {} {}?</div></div><div class="t-body dim85">{}</div><div class="row gap8 wrap mt10">{}{}</div></div>"#,
+                icon("car"),
+                dir.words(),
+                esc(&day_word),
+                esc(&body),
+                btn("filled", "Plan carpool", "carpool", &d.0.to_string()),
+                btn("text", "Not now", "cp-dismiss", &key)
+            ));
+            shown += 1;
+        }
+    }
+    out
+}
+
+fn ago(ms: i64) -> String {
+    let mins = (crate::browser::now_ms() - ms).max(0) / 60_000;
+    match mins {
+        0 => "just now".into(),
+        m if m < 60 => format!("{m}m ago"),
+        m if m < 24 * 60 => format!("{}h ago", m / 60),
+        m => format!("{}d ago", m / (24 * 60)),
+    }
+}
+
+pub fn inbox(a: &App) -> String {
+    let data = &a.repo.data;
+    let mut list = String::new();
+    for m in &data.inbox {
+        let unread = m.read == 0;
+        let sender = crate::model::Person::from_id(&m.from).map(|p| dot(p, 12)).unwrap_or_default();
+        let mark = if unread { btn("text", "Mark as read", "inbox-read", &m.id) } else { String::new() };
+        list.push_str(&format!(
+            r#"<div class="card msg{}" data-key="msg-{}"><div class="row center gap8">{}{sender}<span class="t-title grow">{}</span><span class="t-small dim nowrap">{}</span></div><div class="t-body dim mt4">{}</div><div class="row center mt6"><span class="grow"></span>{mark}{}</div></div>"#,
+            if unread { " unread" } else { "" },
+            esc(&m.id),
+            if unread { r#"<span class="unread-dot"></span>"# } else { "" },
+            esc(&m.title),
+            ago(m.created),
+            esc(&m.body),
+            btn("tonal", "Open", "inbox-open", &m.id)
+        ));
+    }
+    if list.is_empty() {
+        list = r#"<div class="card pad16 t-body dim center-text">No messages yet. Carpool requests, offers and answers show up here.</div>"#.into();
+    }
+    let unread = data.unread_count();
+    let all = btn_disabled("text", "Mark all read", "inbox-all", "", unread == 0);
+    if a.ui.desktop {
+        return format!(r#"<div class="d-head"><div class="t-headline">Inbox</div>{all}</div><div class="inbox-list">{list}</div>"#);
+    }
+    format!(
+        r#"{}<div class="content">{list}</div>"#,
+        top_bar(r#"<span class="t-title-l">Inbox</span>"#, true, &all)
     )
 }

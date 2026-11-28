@@ -40,7 +40,7 @@ jobs:
         run: |
           curl -fsSL https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin
           trunk --version
-          trunk build --release 2>&1 | tee ../trunk.log
+          trunk build --release --public-url /ScheduleZero/ 2>&1 | tee ../trunk.log
           ls -la dist
 
       - name: Screenshots (iPhone WebKit + desktop Chromium)

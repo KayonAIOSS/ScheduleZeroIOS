@@ -43,6 +43,8 @@ pub fn icon(name: &str) -> String {
         "people" => "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z",
         "share" => "M12 2.5l-4.2 4.2 1.4 1.4L11 6.3V15h2V6.3l1.8 1.8 1.4-1.4L12 2.5zM5 10v10.5c0 .8.7 1.5 1.5 1.5h11c.8 0 1.5-.7 1.5-1.5V10h-4v2h2v8H7v-8h2v-2H5z",
         "add-box" => "M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z",
+        "car" => "M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm11 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM5 11l1.5-4.5h11L19 11H5z",
+        "inbox" => "M19 3H4.99c-1.11 0-1.98.89-1.98 2L3 19c0 1.1.88 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2zm0 12h-4c0 1.66-1.35 3-3 3s-3-1.34-3-3H4.99V5H19v10z",
         _ => "",
     };
     format!(r#"<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg>"#)
@@ -101,6 +103,7 @@ pub fn sync_text(s: &Status) -> (&'static str, &'static str) {
     match (s.auth, s.connection) {
         (Auth::NeedsPassword { .. }, _) => ("Sign in to sync", "accent"),
         (Auth::NoPerson, _) => ("Not synced", ""),
+        (_, Connection::Online) if !s.pending && s.using_backup() => ("Synced (backup)", ""),
         (_, Connection::Online) if !s.pending => ("Synced", ""),
         (_, Connection::Online) => ("Syncing…", ""),
         (_, Connection::Connecting) => ("Connecting…", ""),
@@ -152,6 +155,27 @@ pub fn reminder_icon(d: Day, enabled: bool) -> String {
     )
 }
 
+/// Carpool button for a day: always there, highlighted when someone starts or ends near you or a
+/// carpool is already set up.
+pub fn car_btn(d: Day, data: &AppData) -> String {
+    use crate::model::Dir;
+    let active = data.has_active_carpool(d, Dir::To) || data.has_active_carpool(d, Dir::From);
+    let matched = !data.carpool_matches(d, Dir::To).is_empty() || !data.carpool_matches(d, Dir::From).is_empty();
+    format!(
+        r#"<button class="btn icon car{}" aria-label="Carpool" title="Carpool" data-act="carpool" data-arg="{}">{}</button>"#,
+        if active { " on" } else if matched { " match" } else { " dim" },
+        d.0,
+        icon("car")
+    )
+}
+
+/// Inbox button with an unread count.
+pub fn inbox_btn(data: &AppData, act: &str) -> String {
+    let n = data.unread_count();
+    let badge = if n > 0 { format!(r#"<span class="badge-count">{}</span>"#, n.min(99)) } else { String::new() };
+    format!(r#"<button class="btn icon inbox-btn" aria-label="Inbox ({n} unread)" data-act="{act}" data-arg="inbox">{}{badge}</button>"#, icon("inbox"))
+}
+
 pub fn day_card(d: Day, data: &AppData, now: LocalTime, label: Option<&str>, highlight: bool) -> String {
     let plan = data.plan(d);
     let use24 = data.settings.use24h;
@@ -176,12 +200,20 @@ pub fn day_card(d: Day, data: &AppData, now: LocalTime, label: Option<&str>, hig
         (Some(DayPlan::Work { .. }), Some(at)) if at > now => reminder_icon(d, data.reminder_enabled(d)),
         _ => String::new(),
     };
+    let ride = [crate::model::Dir::To, crate::model::Dir::From]
+        .iter()
+        .filter_map(|dir| data.ride_summary(d, *dir).map(|s| format!("{}: {s}", dir.title())))
+        .collect::<Vec<_>>();
+    if !ride.is_empty() {
+        let _ = write!(body, r#"<div class="t-small accent">{}</div>"#, esc(&ride.join(" · ")));
+    }
     format!(
-        r#"<div class="card day-card{}" role="button" tabindex="0" data-act="edit" data-arg="{}">{}<div class="grow">{body}</div>{}{remind}</div>"#,
+        r#"<div class="card day-card{}" role="button" tabindex="0" data-act="edit" data-arg="{}">{}<div class="grow">{body}</div>{}{}{remind}</div>"#,
         if highlight { " hl" } else { "" },
         d.0,
         date_badge(d, plan),
-        others_dots(d, data)
+        others_dots(d, data),
+        car_btn(d, data)
     )
 }
 
@@ -232,6 +264,7 @@ fn render(a: &App, now: LocalTime) -> String {
         Route::Home => screens::home(a, now),
         Route::Week(w) => screens::week(a, now, w),
         Route::Settings => screens::settings(a, now),
+        Route::Inbox => screens::inbox(a),
     };
     let overlays = sheets::overlays(a, now);
     if desktop {
@@ -252,13 +285,14 @@ fn sidebar(a: &App, now: LocalTime) -> String {
     format!(
         r#"<aside class="side"><div class="brand">Schedule<b>Zero</b></div>
 <div class="side-me">{}<div><div class="t-title">{}</div><div class="t-small dim">{}</div></div></div>
-<nav>{}{}{}</nav>
+<nav>{}{}{}{}</nav>
 <div class="side-foot"><button class="linkish {cls}" data-act="side" data-arg="settings">{text}</button><div class="t-small dim">{}</div></div></aside>"#,
         me.map(|p| dot(p, 28)).unwrap_or_default(),
         greeting(now),
         fmt::full_date(now.day()),
         item(route == Route::Home, "home", "Today", "home"),
         item(matches!(route, Route::Week(_)), "week", "Week", &format!("week:{}", this_week.0)),
+        item(route == Route::Inbox, "inbox", &match a.repo.data.unread_count() { 0 => "Inbox".to_string(), n => format!("Inbox <span class=\"badge-count inline\">{n}</span>") }, "inbox"),
         item(route == Route::Settings, "settings", "Settings", "settings"),
         if a.status.connection == Connection::Online { "Live" } else { "" },
     )

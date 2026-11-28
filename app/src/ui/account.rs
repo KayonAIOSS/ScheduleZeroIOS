@@ -42,7 +42,11 @@ pub fn password(a: &App, me: Person, has_password: bool, desktop: bool) -> Strin
         if desktop { " d" } else { "" },
         format!(r#"<span class="dot" style="width:64px;height:64px;background:{}"></span>"#, me.color()),
         if setup { format!("Hi {}! Create a password", me.name()) } else { format!("Welcome back, {}", me.name()) },
-        if setup { "You'll use it to sign in on any of your devices." } else { "Enter your password to sync this device." },
+        format!(
+            "{}{}",
+            if setup { "You'll use it to sign in on any of your devices." } else { "Enter your password to sync this device." },
+            if a.status.auth_server.is_empty() { "" } else { " This site's server can't be reached right now, so this is for the backup server." }
+        ),
         if setup { "new-password" } else { "current-password" },
         esc(&a.ui.password),
         if busy { " disabled" } else { "" },

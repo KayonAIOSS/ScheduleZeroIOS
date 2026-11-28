@@ -40,7 +40,7 @@ def seed(today: date):
     w = lambda s, e: {"type": "work", "start": s, "end": e, "updated": 1}
     off = {"type": "off", "updated": 1}
     weeks = {
-        "samy": {0: w(900, 1380), 2: w(1020, 1440), 4: off, "today": w(1020, 1500)},
+        "samy": {0: w(900, 1380), 2: w(1020, 1440), 4: off, "today": w(960, 1500)},
         "austin": {0: w(960, 1440), 3: w(1080, 1560), "today": w(840, 1320)},
         "kayo": {0: w(960, 1440), 1: off, 2: w(1020, 1530), 3: w(960, 1440), 4: w(1080, 1560), 5: off, "today": w(960, 1470)},
     }
@@ -56,7 +56,7 @@ def seed(today: date):
 def main():
     data_dir = tempfile.mkdtemp()
     server = subprocess.Popen(
-        [sys.executable, "server/schedulezero_server.py", "--port", str(PORT), "--data", data_dir, "--web", DIST],
+        [sys.executable, "server/schedulezero_server.py", "--port", str(PORT), "--data", data_dir, "--web", DIST, "--base", "/ScheduleZero"],
         stdout=open(os.path.join(OUT, "logs", "server.log"), "w"), stderr=subprocess.STDOUT,
     )
     try:
@@ -101,7 +101,7 @@ def shot(page, name):
 
 
 def run_flow(page, n):
-    page.goto(BASE + "/")
+    page.goto(BASE + "/ScheduleZero/")
     page.wait_for_selector("[data-act=pick]", timeout=20000)
     shot(page, f"{n}-01-picker")
     page.click("[data-act=pick][data-arg=kayo]")
@@ -119,6 +119,35 @@ def run_flow(page, n):
         page.evaluate("window.scrollBy(0, 700)")
         shot(page, f"{n}-04-home-scrolled")
         page.evaluate("window.scrollBy(0, -2000)")
+    # Carpool: Samy starts at the same time today, so the hero's car button is highlighted.
+    page.click(".hero [data-act=carpool]")
+    page.wait_for_selector(".cp-dir.match", timeout=5000)
+    shot(page, f"{n}-04b-carpool-sheet")
+    page.click("[data-act=cp-compose][data-arg='to:request']")
+    page.fill("#cp-note", "ci " + n)
+    shot(page, f"{n}-04c-carpool-compose")
+    page.click("[data-act=cp-send]")
+    page.wait_for_selector(".cp-card", timeout=10000)
+    samy = api("POST", "/api/auth/login", {"person": "samy", "password": "ci-pass", "deviceId": "ci-samy"})["token"]
+    st = api("GET", "/api/state?since=-1&wait=0", token=samy)
+    mine = [m for m in st["inbox"] if m["title"] == "Kayo asks for a ride to work" and ("ci " + n) in m["body"]]
+    if not mine:
+        raise SystemExit(f"{n}: Samy never got the carpool request: {st['inbox']}")
+    api("POST", "/ScheduleZero/api/carpool", {"action": "respond", "id": mine[0]["carpool"], "answer": "yes"}, samy)
+    page.wait_for_selector(".status.yes", timeout=40000)  # live update, no reload
+    shot(page, f"{n}-04d-carpool-confirmed")
+    page.keyboard.press("Escape")
+    page.click("[data-act=nav][data-arg=inbox]" if n == "iphone" else "[data-act=side][data-arg=inbox]")
+    page.wait_for_selector(".msg.unread", timeout=10000)
+    shot(page, f"{n}-04e-inbox")
+    page.click(".msg.unread [data-act=inbox-read]")
+    page.wait_for_timeout(800)
+    st = api("GET", "/api/state?since=-1&wait=0", token=api("POST", "/api/auth/login", {"person": "kayo", "password": "ci-pass", "deviceId": "ci-k"})["token"])
+    if any(m["read"] == 0 and m["title"] == "Samy will drive you to work" for m in st["inbox"]):
+        raise SystemExit(f"{n}: mark as read didn't reach the server")
+    print(n, "carpool request, answer and mark-as-read all synced")
+    page.click("[data-act=back]" if n == "iphone" else "[data-act=side][data-arg=home]")
+    page.wait_for_selector(".hero", timeout=5000)
     page.click(".hero [data-act=compare]") if page.locator(".hero [data-act=compare]").count() else None
     shot(page, f"{n}-05-compare")
     page.keyboard.press("Escape")

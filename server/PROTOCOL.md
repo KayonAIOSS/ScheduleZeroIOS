@@ -75,6 +75,33 @@ Full state:
 
 `/api/ping` also reports `version`, `web` (serves the web app) and `push` (web push available).
 
+## Carpools and inbox
+
+A carpool is a **request** ("can someone drive me?") or an **offer** ("I can drive you") for one day
+and one direction, `to` work or `from` work. The two directions are independent. Everyone sees all
+carpools in `/api/state` (`"carpools": [...]`); each device also gets its person's `"inbox"`
+(newest first, up to 100 messages).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/api/carpool` | Bearer | `{"action":"create","kind":"request"\|"offer","day","dir":"to"\|"from","to":["samy",...],"note"}` |
+| POST | `/api/carpool` | Bearer | `{"action":"respond","id","answer":"yes"\|"no"}`, only by a person it was sent to; can be changed later |
+| POST | `/api/carpool` | Bearer | `{"action":"cancel","id"}`, only by the sender |
+| POST | `/api/inbox/read` | Bearer | `{"ids":[...]}` or `{"all":true}` |
+
+Carpool: `{"id","from","kind","day","dir","to":[...],"note","created","cancelled":ms|0,"responses":{"samy":{"answer":"yes","at":ms}}}`.
+Each create, answer and cancel makes inbox messages for the other people involved:
+`{"id","to","from","kind":"carpool-new|carpool-answer|carpool-cancel","carpool","title","body","created","read":ms|0}`.
+Devices notify about new unread messages. Android does it on sync; the web app gets a web push from
+the server with a "Mark as read" button. Confirm/deny is never on a notification, only in the app.
+Servers merge carpools (answers per person, newest wins) and messages (read = latest) during peer sync.
+
+## Web address prefix
+
+The web container runs under `https://pciememorycontroller.com/ScheduleZero` (`SZ_BASE_PATH`). The server
+accepts paths with or without that prefix, so it works whether or not the reverse proxy strips it.
+API responses allow any origin (CORS), so the web app can use another server as its backup.
+
 ## Web push (web app reminders)
 
 Android schedules its own alarms. A web page can't wake itself up, so the web app uploads the
