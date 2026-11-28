@@ -69,6 +69,7 @@ MAX_FUTURE_DAYS = 400       # ignore absurd dates
 PBKDF2_ITERATIONS = 200_000
 MIN_PASSWORD_LEN = 4
 MAX_BODY = 256 * 1024
+FUTURE_SLACK_MS = 2 * 60 * 1000  # device edit times further ahead than this are clamped to now
 WORK_MIN, WORK_MAX = 12 * 60, 26 * 60   # noon .. 2 AM next day, in work-day minutes
 
 
@@ -143,15 +144,23 @@ class Store:
                 self.cond.wait(remaining)
             return self.snapshot()
 
-    def merge_days(self, person: str, incoming: dict) -> int:
-        """Last-write-wins per day, using each entry's `updated` timestamp."""
+    def merge_days(self, person: str, incoming: dict, from_device: bool = False) -> int:
+        """Last-write-wins per day, using each entry's `updated` timestamp (when the edit was made).
+
+        An edit made offline uploads later but keeps its original time, so it never overwrites a
+        newer edit from another device. Edits from devices can't claim a time in the future: a phone
+        with a clock set ahead would otherwise beat every later edit.
+        """
         applied = 0
         with self.cond:
             days = self.people[person]
+            limit = now_ms() + FUTURE_SLACK_MS
             for day, entry in incoming.items():
                 clean = validate_entry(day, entry)
                 if clean is None:
                     continue
+                if from_device and clean["updated"] > limit:
+                    clean["updated"] = now_ms()
                 current = days.get(day)
                 if current is None or clean["updated"] > int(current.get("updated", 0)):
                     days[day] = clean
@@ -788,8 +797,8 @@ def make_handler(store: Store, verbose: bool, push: "PushStore" = None, static: 
                 days = body.get("days")
                 if not isinstance(days, dict):
                     return self._send(400, {"error": "days must be an object"})
-                applied = store.merge_days(person, days)
-                return self._send(200, {"applied": applied, "rev": store.rev})
+                applied = store.merge_days(person, days, from_device=True)
+                return self._send(200, {"applied": applied, "rev": store.rev, "serverTime": now_ms()})
             self._send(404, {"error": "not found"})
 
         def _push_post(self, path: str, body: dict):

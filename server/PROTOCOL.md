@@ -34,9 +34,13 @@ midnight still belongs to the day it started.
 {"type": "none", "updated": 1795725900000}
 ```
 
-`none` is a deletion marker ("not entered"). `updated` is the editing device's clock in Unix ms.
-The server keeps whichever version of a day has the highest `updated` (last write wins), so devices
-can edit offline and upload later.
+`none` is a deletion marker ("not entered"). `updated` is **when the edit was made**, in Unix ms on
+the server's clock: devices add the offset they learn from `serverTime` (in `/api/state` and
+`/api/schedule` responses) to their own clock, and remember it for offline edits. The server keeps
+whichever version of a day has the highest `updated` (the most recent edit wins). An edit made
+offline uploads later but keeps its original time, so it never overwrites a later edit from
+another device. Uploads with `updated` more than 2 minutes in the server's future are clamped to
+the server's current time, so a phone with a wrong clock can't win forever.
 
 Reminders, theme and other settings are per-device and never synced.
 
@@ -112,6 +116,8 @@ needs to be configured. Passwords are never exchanged.
    (Deleting `passwords/<person>.json` on the server voids every token for that person but keeps their schedule.)
 3. While the app is open: keep a long-poll running (`since` = last `rev` seen). After every local edit,
    immediately `POST /api/schedule` with the changed days; if offline, keep them marked "dirty" and retry later.
-4. When merging the server's copy of your own days, skip days you still have unsent edits for, and only
-   take a day if its `updated` is newer than yours.
+4. When merging the server's copy of your own days, take a day only if its `updated` is newer than
+   yours, and then also drop your unsent edit for that day (it's older, the server would reject it).
+   `POST /api/schedule` returns `applied`; if it's less than the number of days sent, another device
+   edited some of them later, so fetch the full state next (`since=-1`).
 5. Network errors are normal (phone asleep, no signal). Back off quietly and retry; never alert the user.

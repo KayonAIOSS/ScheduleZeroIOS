@@ -163,14 +163,13 @@ impl Repo {
         }
     }
 
-    /// Applies the server's copy of everyone. Your own unsent edits always win.
+    /// Applies the server's copy of everyone. Per day, the most recent edit wins, from whichever
+    /// device made it: a remote edit newer than ours replaces ours even if ours hasn't uploaded
+    /// yet (the server would reject ours anyway), and an older remote copy never replaces ours.
     pub fn apply_server(&mut self, people: &BTreeMap<Person, BTreeMap<i32, SyncedDay>>) {
         let Some(me) = self.data.me else { return };
         if let Some(mine) = people.get(&me) {
             for (d, remote) in mine {
-                if self.dirty.contains(d) {
-                    continue;
-                }
                 let newer = self.updated_at.get(d).map_or(true, |local| remote.updated > *local);
                 if newer {
                     match remote.plan {
@@ -178,6 +177,7 @@ impl Repo {
                         None => self.data.plans.remove(d),
                     };
                     self.updated_at.insert(*d, remote.updated);
+                    self.dirty.remove(d);
                 }
             }
         }
@@ -241,7 +241,8 @@ mod tests {
         samy.insert(d.plus(1).0, SyncedDay { plan: None, updated: 6 });
         people.insert(Person::Samy, samy);
         r.apply_server(&people);
-        assert_eq!(r.data.plan(d), work(960, 1440)); // still dirty: ours wins
+        // The server's copy of `d` (999) is newer than our unsent edit (100): the later edit wins.
+        assert_eq!(r.data.plan(d), Some(DayPlan::Off));
         assert_eq!(r.data.plan(d.plus(1)), work(720, 900));
         assert_eq!(r.data.others_working(d), vec![Person::Samy]);
         assert_eq!(r.data.others[Person::Samy.index()].len(), 1);
@@ -254,6 +255,44 @@ mod tests {
         people.insert(Person::Kayo, mine);
         r.apply_server(&people);
         assert_eq!(r.data.plan(d), Some(DayPlan::Off));
+    }
+
+    /// This phone edits offline at 10:00, another device edits the same day online at 10:05,
+    /// then this phone reconnects: the 10:05 edit must survive here and on the server.
+    #[test]
+    fn offline_edit_never_overwrites_a_later_edit() {
+        let min = 60_000;
+        let d = Day::from_ymd(2026, 11, 30);
+        let mut phone = Repo::default();
+        phone.set_me(Person::Kayo, 0);
+        phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min); // offline edit, 10:00
+        let other = SyncedDay { plan: work(1000, 1400), updated: 10 * 60 * min + 5 * min }; // 10:05
+        let mut people = BTreeMap::new();
+        people.insert(Person::Kayo, BTreeMap::from([(d.0, other)]));
+        // Reconnect: the server already has 10:05, so it rejects our 10:00 upload...
+        let sent = phone.pending_uploads(0);
+        phone.mark_uploaded(&sent);
+        // ...and the state it sends back replaces our older copy.
+        phone.apply_server(&people);
+        assert_eq!(phone.data.plan(d), work(1000, 1400));
+        assert!(!phone.has_pending_uploads());
+
+        // Same, but the state arrives before the upload: the newer edit still wins, and our
+        // older edit is no longer queued, so it is never sent.
+        let mut phone = Repo::default();
+        phone.set_me(Person::Kayo, 0);
+        phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min);
+        phone.apply_server(&people);
+        assert_eq!(phone.data.plan(d), work(1000, 1400));
+        assert!(!phone.has_pending_uploads());
+
+        // And the other way round: our offline edit is the later one, so it stays queued and wins.
+        let mut phone = Repo::default();
+        phone.set_me(Person::Kayo, 0);
+        phone.set_plan(d, Some(DayPlan::Off), 10 * 60 * min + 9 * min);
+        phone.apply_server(&people);
+        assert_eq!(phone.data.plan(d), Some(DayPlan::Off));
+        assert!(phone.has_pending_uploads());
     }
 
     #[test]

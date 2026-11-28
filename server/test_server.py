@@ -135,6 +135,34 @@ class ServerTests(unittest.TestCase):
         st, raw, _ = self.req("GET", "/api/state?since=-1&wait=0", token=t)
         self.assertEqual(json.loads(raw)["people"]["samy"][day]["start"], 960)
 
+    def test_later_edit_wins_even_if_older_one_uploads_last(self):
+        """Phone A edits offline at 10:00; phone B edits the same day online at 10:05;
+        A reconnects at 10:10 and uploads. B's later edit must stay."""
+        t = self.token("austin")
+        day = (date.today() + timedelta(days=3)).isoformat()
+        now = sz.now_ms()
+        a_edit = {"type": "off", "updated": now - 10 * 60_000}
+        b_edit = {"type": "work", "start": 1000, "end": 1400, "updated": now - 5 * 60_000}
+        st, raw, _ = self.req("POST", "/api/schedule", {"days": {day: b_edit}}, t)
+        self.assertEqual(json.loads(raw)["applied"], 1)
+        st, raw, _ = self.req("POST", "/api/schedule", {"days": {day: a_edit}}, t)
+        self.assertEqual(json.loads(raw)["applied"], 0)
+        self.assertIn("serverTime", json.loads(raw))
+        st, raw, _ = self.req("GET", "/api/state?since=-1&wait=0", token=t)
+        self.assertEqual(json.loads(raw)["people"]["austin"][day]["start"], 1000)
+
+    def test_device_clock_in_future_is_clamped(self):
+        t = self.token("austin")
+        day = (date.today() + timedelta(days=4)).isoformat()
+        future = sz.now_ms() + 24 * 3600 * 1000  # phone clock a day ahead
+        self.req("POST", "/api/schedule", {"days": {day: {"type": "off", "updated": future}}}, t)
+        st, raw, _ = self.req("GET", "/api/state?since=-1&wait=0", token=t)
+        self.assertLessEqual(json.loads(raw)["people"]["austin"][day]["updated"], sz.now_ms())
+        # So a normal edit made a minute later still wins.
+        later = {"type": "work", "start": 900, "end": 1300, "updated": sz.now_ms() + 1000}
+        st, raw, _ = self.req("POST", "/api/schedule", {"days": {day: later}}, t)
+        self.assertEqual(json.loads(raw)["applied"], 1)
+
     def test_push_flow(self):
         t = self.token("kayo")
         st, raw, _ = self.req("GET", "/api/push/key")

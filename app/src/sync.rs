@@ -70,6 +70,8 @@ pub struct SavedSync {
     pub device_id: String,
     pub token: Option<String>,
     pub rev: i64,
+    /// Server clock minus this device's clock, in ms (see `edit_time`).
+    pub clock_offset: i64,
 }
 
 impl SavedSync {
@@ -80,6 +82,7 @@ impl SavedSync {
             s.rev = -1;
             s.save();
         }
+        CLOCK_OFFSET.with(|c| c.set(s.clock_offset));
         s
     }
 
@@ -105,6 +108,28 @@ thread_local! {
     static WAKER: std::cell::RefCell<Option<js_sys::Function>> = const { std::cell::RefCell::new(None) };
     static PUSHING: Cell<bool> = const { Cell::new(false) };
     static PUSH_AGAIN: Cell<bool> = const { Cell::new(false) };
+    static CLOCK_OFFSET: Cell<i64> = const { Cell::new(0) };
+}
+
+/// When an edit happened, on the server's clock. Every device stamps edits this way, so "the
+/// most recent edit wins" holds even if a phone's own clock is wrong. Kept outside the app state
+/// so it can be read while that state is being changed.
+pub fn edit_time() -> i64 {
+    now_ms() + CLOCK_OFFSET.with(|c| c.get())
+}
+
+/// Learns the server's clock from a response's `serverTime`. Call outside `with`/`with_mut`.
+fn learn_server_clock(v: &Value) {
+    if let Some(server) = v["serverTime"].as_i64() {
+        let offset = server - now_ms();
+        CLOCK_OFFSET.with(|c| c.set(offset));
+        with_mut(|a| {
+            if (a.saved.clock_offset - offset).abs() > 1000 {
+                a.saved.clock_offset = offset;
+                a.saved.save();
+            }
+        });
+    }
 }
 
 // ---- HTTP -----------------------------------------------------------------------------------
@@ -242,7 +267,7 @@ pub fn choose_person(p: Person) {
             a.saved.rev = -1;
             a.saved.save();
         }
-        a.repo.set_me(p, now_ms());
+        a.repo.set_me(p, edit_time());
         a.status.auth = Auth::Unknown;
         a.status.password_skipped = false;
         a.status.pending = a.repo.has_pending_uploads();
@@ -408,6 +433,7 @@ async fn live_loop(gen: u32) {
 }
 
 fn apply_state(v: &Value) {
+    learn_server_clock(v);
     let rev = v["rev"].as_i64().unwrap_or(-1);
     let unchanged = v["unchanged"].as_bool().unwrap_or(false);
     let people = (!unchanged).then(|| parse_people(&v["people"]));
@@ -438,18 +464,29 @@ async fn push_to(token: &str) -> bool {
     let mut ok = true;
     loop {
         PUSH_AGAIN.with(|p| p.set(false));
-        let pending = with(|a| a.repo.pending_uploads(now_ms()));
+        let pending = with(|a| a.repo.pending_uploads(edit_time()));
         if pending.is_empty() {
             break;
         }
         let days: serde_json::Map<String, Value> = pending.iter().map(|(d, s)| (Day(*d).iso(), day_json(s))).collect();
         match api("POST", "/api/schedule", Some(token), Some(json!({ "days": days })), 15_000).await {
-            Ok(_) => {
+            Ok(v) => {
+                learn_server_clock(&v);
+                // Fewer applied than sent = another device edited some of these days later.
+                // Fetch the full state next so those newer edits replace ours here too.
+                let rejected = v["applied"].as_u64().map_or(false, |n| (n as usize) < pending.len());
                 with_mut(|a| {
                     a.repo.mark_uploaded(&pending);
                     a.status.pending = a.repo.has_pending_uploads();
+                    if rejected {
+                        a.saved.rev = -1;
+                        a.saved.save();
+                    }
                 });
                 app::commit();
+                if rejected {
+                    wake_up();
+                }
             }
             Err(e) => {
                 if matches!(e, FetchError::Http(401, _)) {

@@ -1,7 +1,7 @@
 //! What every tap does. Names match the `data-act` attributes written by `ui`.
 
 use crate::app::{self, commit, commit_schedule, with, with_mut, Confirm, EditMode, Pick, Route};
-use crate::browser::{self, now_ms, window};
+use crate::browser::{self, window};
 use crate::model::{work_time, Person, LEAD_MAX, LEAD_MIN, LEAD_STEP};
 use crate::sync::{self, PasswordResult};
 use crate::time::Day;
@@ -138,7 +138,7 @@ pub fn click(act: &str, arg: &str) {
                 if has {
                     with_mut(|a| a.ui.confirm = Some(Confirm::CopyWeek { from, to }));
                 } else {
-                    with_mut(|a| a.repo.copy_week(from, to, now_ms()));
+                    with_mut(|a| a.repo.copy_week(from, to, crate::sync::edit_time()));
                     commit_schedule();
                 }
             }
@@ -147,7 +147,7 @@ pub fn click(act: &str, arg: &str) {
             if let Some(w) = day(arg) {
                 with_mut(|a| {
                     a.ui.menu_open = false;
-                    a.repo.mark_unset_off(w, now_ms());
+                    a.repo.mark_unset_off(w, crate::sync::edit_time());
                 });
                 commit_schedule();
             }
@@ -241,15 +241,15 @@ pub fn click(act: &str, arg: &str) {
             let c = with_mut(|a| a.ui.confirm.take());
             match c {
                 Some(Confirm::CopyWeek { from, to }) => {
-                    with_mut(|a| a.repo.copy_week(from, to, now_ms()));
+                    with_mut(|a| a.repo.copy_week(from, to, crate::sync::edit_time()));
                     commit_schedule();
                 }
                 Some(Confirm::ClearWeek(w)) => {
-                    with_mut(|a| a.repo.clear_week(w, now_ms()));
+                    with_mut(|a| a.repo.clear_week(w, crate::sync::edit_time()));
                     commit_schedule();
                 }
                 Some(Confirm::ClearAll) => {
-                    with_mut(|a| a.repo.clear_all_schedules(now_ms()));
+                    with_mut(|a| a.repo.clear_all_schedules(crate::sync::edit_time()));
                     commit_schedule();
                 }
                 Some(Confirm::SignOut) => {

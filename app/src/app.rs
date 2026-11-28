@@ -1,7 +1,7 @@
 //! Global app state. Everything runs on the browser's single thread, so state lives in one
 //! thread-local `RefCell`. Never hold a borrow across an `.await`.
 
-use crate::browser::{self, local_now, now_ms, storage_get, storage_set};
+use crate::browser::{self, local_now, storage_get, storage_set};
 use crate::model::{DayPlan, Person};
 use crate::push::PushState;
 use crate::store::Repo;
@@ -141,7 +141,7 @@ pub fn save_editor(next: bool) {
     };
     let now = local_now();
     with_mut(|a| {
-        a.repo.set_plan(ed.date, plan, now_ms());
+        a.repo.set_plan(ed.date, plan, crate::sync::edit_time());
         if let (Some(DayPlan::Work { .. }), Some(at)) = (plan, a.repo.data.reminder_time(ed.date)) {
             if at > now && ed.reminder != a.repo.data.reminder_enabled(ed.date) {
                 a.repo.set_reminder(ed.date, ed.reminder);
