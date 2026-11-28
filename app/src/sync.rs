@@ -406,26 +406,29 @@ pub async fn submit_password(password: String, setup: bool) -> PasswordResult {
                 a.status.auth = Auth::SignedIn;
                 a.status.connection = Connection::Online;
             });
+            crate::push::on_signed_in();
+            restart();
             // Sign in to the other server too while we have the password, so failover is seamless.
+            // In the background: an unreachable backup must not hold up loading the schedule.
             let others: Vec<String> = with(|a| a.saved.servers()).into_iter().filter(|s| *s != target).collect();
-            for other in others {
-                if with(|a| a.saved.token(&other).is_some()) {
-                    continue;
-                }
-                if let Ok(has) = auth_status(&other, me).await {
-                    let p = if has { "/api/auth/login" } else { "/api/auth/setup" };
-                    if let Ok(v) = api_at(&other, "POST", p, None, Some(payload.clone()), 15_000).await {
-                        if let Some(t) = v["token"].as_str() {
-                            with_mut(|a| {
-                                a.saved.tokens.insert(other.clone(), t.to_string());
-                                a.saved.save();
-                            });
+            spawn_local(async move {
+                for other in others {
+                    if with(|a| a.saved.token(&other).is_some()) {
+                        continue;
+                    }
+                    if let Ok(has) = auth_status(&other, me).await {
+                        let p = if has { "/api/auth/login" } else { "/api/auth/setup" };
+                        if let Ok(v) = api_at(&other, "POST", p, None, Some(payload.clone()), 15_000).await {
+                            if let Some(t) = v["token"].as_str() {
+                                with_mut(|a| {
+                                    a.saved.tokens.insert(other.clone(), t.to_string());
+                                    a.saved.save();
+                                });
+                            }
                         }
                     }
                 }
-            }
-            crate::push::on_signed_in();
-            restart();
+            });
             PasswordResult::Ok
         }
         Err(FetchError::Http(401, _)) => PasswordResult::Wrong,
