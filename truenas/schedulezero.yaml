@@ -1,14 +1,11 @@
 # ScheduleZero for TrueNAS SCALE: web app + sync server in one container.
 #
 # Install: Apps -> Discover Apps -> ⋮ (top right) -> Install via YAML. Name it "schedulezero",
-# paste this whole file, put the peer key in SZ_PEER_KEY (see below), then Save.
+# paste this whole file, put the shared key in SZ_PEER_KEY, then Save.
 #
-# SZ_PEER_KEY must be the same secret as on debian-server (sudo cat /etc/schedulezero.env there).
-# With it, debian-server copies everyone's schedules to and from this server every 20 seconds.
-#
-# Then point https://pciememorycontroller.com at this machine's port 8787 (the playit.gg tunnel /
-# Cloudflare / reverse proxy). That one address serves both the web app (/) and the sync API (/api)
-# the Android app uses as its backup server.
+# The app is served at https://pciememorycontroller.com/ScheduleZero/ (point the reverse proxy's
+# /ScheduleZero path at this machine's port 8787; stripping the prefix or not both work). The same
+# address is the Android app's backup server.
 #
 # Update: Apps -> schedulezero -> Edit -> Save. "pull_policy: always" fetches the newest image.
 services:
@@ -17,13 +14,18 @@ services:
     pull_policy: always
     restart: unless-stopped
     environment:
+      # Same secret as on debian-server, so the two servers copy schedules and carpools to each
+      # other. Without it everything still works, they just don't sync.
       SZ_PEER_KEY: "PASTE-THE-SHARED-KEY-HERE"
       # Leave empty: debian-server already syncs with this server by itself.
       SZ_PEERS: ""
+      # Forgot a password? Put the name here (e.g. "kayo"), Save, and that password is reset once.
+      # To reset the same person again later, change the text, e.g. "kayo 2".
+      SZ_RESET_PASSWORDS: ""
     ports:
       - "8787:8787"
     volumes:
-      # Schedules, passwords and reminder subscriptions. Kept across updates.
+      # Schedules, passwords, carpools and notification settings. Kept across updates.
       - schedulezero-data:/data
 
 volumes:
