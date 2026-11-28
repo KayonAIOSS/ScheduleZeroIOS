@@ -1,7 +1,9 @@
 # ScheduleZero sync protocol (v1)
 
-Plain HTTP + JSON, so the Android app, a future iOS app, or anything else can talk to the same server.
-Traffic runs over Tailscale (WireGuard-encrypted), so the app uses plain `http://`.
+Plain HTTP + JSON, so the Android app, the web app, or anything else can talk to the same server.
+Traffic to the main server runs over Tailscale (WireGuard-encrypted), so the Android app uses plain
+`http://` there. The web app (ScheduleZeroWeb) is served by a server itself and only talks to the
+server it was loaded from.
 
 Default servers: main `http://100.93.228.123:8787` (the `debian-server` Tailscale node), backup
 `https://pciememorycontroller.com`. Clients try the main server first and fall back to the backup.
@@ -18,7 +20,7 @@ Exactly three accounts. IDs are lowercase and fixed:
 | `kayo`   | Kayo   | purple `#9C4DFF` |
 
 One person can use any number of devices. Each install generates a random device ID and sends it in
-`X-Device-Id` (plus optional `X-Device-Name`, `X-Platform`: `android` / `ios`).
+`X-Device-Id` (plus optional `X-Device-Name`, `X-Platform`: `android` / `web`).
 
 ## Day entries
 
@@ -67,6 +69,30 @@ Full state:
 }
 ```
 
+`/api/ping` also reports `version`, `web` (serves the web app) and `push` (web push available).
+
+## Web push (web app reminders)
+
+Android schedules its own alarms. A web page can't wake itself up, so the web app uploads the
+reminders it wants and the server sends them as payload-less web pushes (VAPID, RFC 8292). The
+service worker then fetches the text from the inbox. Each server has its own key pair
+(`vapid.json` in the data directory) and its own subscriptions (`push.json`); none of this is synced.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET  | `/api/push/key` | – | `{"publicKey"}` for `pushManager.subscribe`. |
+| POST | `/api/push/subscribe` | Bearer | `{"deviceId","subscription":{endpoint,keys}}` → `{"key"}` (inbox key for the service worker). |
+| POST | `/api/push/schedule` | Bearer | `{"deviceId","items":[...]}` replaces this device's reminders. |
+| POST | `/api/push/unsubscribe` | Bearer | `{"deviceId"}` |
+| POST | `/api/push/test` | Bearer | `{"deviceId"}` sends a test reminder now. |
+| GET  | `/api/push/inbox?device=&key=` | inbox key | Pops one message: `{"message":{id,title,body,tag,snoozable}}` or `{"message":null}`. |
+| POST | `/api/push/snooze` | inbox key | `{"deviceId","key","id"}` sends that reminder again in 15 minutes. |
+
+Item: `{"id":"shift-2026-11-27","at":ms,"until":ms,"title","body","check":{...}}`. `check` keeps
+stale reminders from firing, like Android's alarm receiver: `{"type":"shift","day","start"}` only
+fires if that day is still work starting at `start`; `{"type":"weekly","week":"YYYY-MM-DD"}` only fires
+if that Monday–Sunday week is still empty. Reminders more than 6 h late are dropped.
+
 ## Server-to-server sync
 
 Both endpoints need the header `X-Peer-Key: <SZ_PEER_KEY>` (identical on all servers); otherwise `403`.
@@ -79,7 +105,7 @@ Both endpoints need the header `X-Peer-Key: <SZ_PEER_KEY>` (identical on all ser
 A server with `SZ_PEERS` set does GET + merge + POST every `SZ_PEER_INTERVAL` seconds. Only one side
 needs to be configured. Passwords are never exchanged.
 
-## Client loop (what Android does; iOS should do the same)
+## Client loop (what Android and the web app do)
 
 1. Pick a person (no free-text usernames). `GET /api/auth/status` → show "create password" or "enter password".
 2. Store the token. On any `401`: drop the token, call `/api/auth/status` again and show the right password screen.

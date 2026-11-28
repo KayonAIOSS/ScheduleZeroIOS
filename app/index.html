@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ScheduleZero</title>
+  <meta name="description" content="Work schedules for Samy, Austin and Kayo">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ScheduleZero">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <link data-trunk rel="css" href="style.css">
+  <link data-trunk rel="copy-file" href="static/sw.js">
+  <link data-trunk rel="copy-file" href="static/glue.js">
+  <link data-trunk rel="copy-file" href="static/manifest.webmanifest">
+  <link data-trunk rel="copy-file" href="static/icon-192.png">
+  <link data-trunk rel="copy-file" href="static/icon-512.png">
+  <link data-trunk rel="copy-file" href="static/apple-touch-icon.png">
+  <link data-trunk rel="rust" data-wasm-opt="z">
+  <script src="/glue.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="boot" class="boot">
+    <div class="boot-dots"><span style="background:#E53935"></span><span style="background:#1E88E5"></span><span style="background:#9C4DFF"></span></div>
+    <noscript>ScheduleZero needs JavaScript turned on.</noscript>
+  </div>
+</body>
+</html>

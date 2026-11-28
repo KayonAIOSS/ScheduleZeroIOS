@@ -1,0 +1,30 @@
+# ScheduleZero for TrueNAS SCALE: web app + sync server in one container.
+#
+# Install: Apps -> Discover Apps -> ⋮ (top right) -> Install via YAML. Name it "schedulezero",
+# paste this whole file, put the peer key in SZ_PEER_KEY (see below), then Save.
+#
+# SZ_PEER_KEY must be the same secret as on debian-server (sudo cat /etc/schedulezero.env there).
+# With it, debian-server copies everyone's schedules to and from this server every 20 seconds.
+#
+# Then point https://pciememorycontroller.com at this machine's port 8787 (the playit.gg tunnel /
+# Cloudflare / reverse proxy). That one address serves both the web app (/) and the sync API (/api)
+# the Android app uses as its backup server.
+#
+# Update: Apps -> schedulezero -> Edit -> Save. "pull_policy: always" fetches the newest image.
+services:
+  schedulezero:
+    image: ghcr.io/kayonaioss/schedulezeroweb:latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      SZ_PEER_KEY: "PASTE-THE-SHARED-KEY-HERE"
+      # Leave empty: debian-server already syncs with this server by itself.
+      SZ_PEERS: ""
+    ports:
+      - "8787:8787"
+    volumes:
+      # Schedules, passwords and reminder subscriptions. Kept across updates.
+      - schedulezero-data:/data
+
+volumes:
+  schedulezero-data:

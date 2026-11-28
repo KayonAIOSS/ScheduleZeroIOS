@@ -1,0 +1,6 @@
+.git
+app/target
+app/dist
+shots
+out
+ci

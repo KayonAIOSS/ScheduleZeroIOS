@@ -1,0 +1,56 @@
+[package]
+name = "schedulezero"
+version = "2.0.0"
+edition = "2021"
+description = "ScheduleZero web app (Rust compiled to WebAssembly)"
+publish = false
+
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "AbortController",
+  "AbortSignal",
+  "Attr",
+  "console",
+  "Document",
+  "DocumentFragment",
+  "DomTokenList",
+  "DomRect",
+  "Element",
+  "Event",
+  "EventTarget",
+  "Headers",
+  "History",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlTemplateElement",
+  "KeyboardEvent",
+  "Location",
+  "MediaQueryList",
+  "NamedNodeMap",
+  "Navigator",
+  "Node",
+  "NodeList",
+  "Request",
+  "RequestCache",
+  "RequestInit",
+  "Response",
+  "ScrollIntoViewOptions",
+  "ScrollLogicalPosition",
+  "Storage",
+  "VisibilityState",
+  "Window",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

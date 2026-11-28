@@ -1,6 +1,10 @@
-# Server copy (reference + CI only)
+# Sync server
 
-`schedulezero_server.py` and `PROTOCOL.md` are copies of the real sync server, which lives with the
-Android app in the main ScheduleZero folder and runs on debian-server. CI starts this copy so the
-iPhone app's live sync test talks to the exact same server code. When the server changes, copy the
-two files here again.
+`schedulezero_server.py` is the ScheduleZero sync server (Python standard library only). It is the
+**same file** as `ScheduleZero/server/schedulezero_server.py` next to the Android app, which runs on
+debian-server. When one changes, copy it to the other.
+
+- In the container (`Dockerfile`) it also serves the web app from `/app/web` and sends web pushes.
+- On debian-server there is no `web/` folder, so it stays sync-only.
+
+API: [PROTOCOL.md](PROTOCOL.md). Tests: `python3 test_server.py`.
